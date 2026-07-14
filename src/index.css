@@ -1,0 +1,28 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-botanical-bg: #f8f7f4;
+  --color-botanical-ink: #1a1c18;
+  --color-botanical-green: #5c7c5a;
+  --color-botanical-faint: rgba(26, 28, 24, 0.08);
+  --color-botanical-muted: rgba(26, 28, 24, 0.6);
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Cormorant Garamond", serif;
+  --font-mono: "Space Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+body {
+  background-color: var(--color-botanical-bg);
+  color: var(--color-botanical-ink);
+}
+
+.stApp {
+  background-color: var(--color-botanical-bg);
+}
+
+.dot-pattern {
+  background-image: radial-gradient(rgba(26, 28, 24, 0.08) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
