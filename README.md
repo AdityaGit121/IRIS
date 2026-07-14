@@ -115,3 +115,4 @@ on startup with an out-of-memory error, either:
 - **Confidence threshold:** the app warns the user when confidence is
   below 60%, which usually indicates a blurry photo, an untrained
   species, or multiple objects in frame.
+# IRIS
