@@ -1,39 +1,32 @@
 import express from "express";
+import app from "./app";
 import path from "path";
-import apiApp from "./app";
+import { createServer as createViteServer } from "vite";
 
-const rootApp = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = 3000;
 
-// Mount all /api/* routes (health, demo-images, predict, flower-facts)
-rootApp.use(apiApp);
-
-async function start() {
+async function startServer() {
   if (process.env.NODE_ENV !== "production") {
-    // Dev mode: Vite middleware handles the React app + HMR.
-    // /public (including /public/flowers) is served automatically by Vite.
-    // Dynamically imported so `vite` is never required at runtime in the
-    // production bundle (it's a devDependency only).
-    const { createServer: createViteServer } = await import("vite");
+    console.log("Starting AI Studio server in [DEVELOPMENT] mode...");
     const vite = await createViteServer({
-      root: path.join(__dirname, ".."),
       server: { middlewareMode: true },
       appType: "spa",
     });
-    rootApp.use(vite.middlewares);
+    app.use(vite.middlewares);
   } else {
-    // Production: serve the Vite build output (includes copied /public assets,
-    // e.g. dist/flowers/...).
-    const distPath = path.join(__dirname, "..", "dist");
-    rootApp.use(express.static(distPath));
-    rootApp.get("*", (_req, res) => {
+    console.log("Starting AI Studio server in [PRODUCTION] mode...");
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
-  rootApp.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server listening on http://0.0.0.0:${PORT}`);
   });
 }
 
-start();
+startServer().catch((err) => {
+  console.error("Boot error:", err);
+});

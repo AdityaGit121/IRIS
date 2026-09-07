@@ -3,265 +3,271 @@ import path from "path";
 import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 
+// Initialize Gemini Client
+const apiKey = process.env.GEMINI_API_KEY;
+const ai = new GoogleGenAI({
+  apiKey: apiKey || "",
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    }
+  }
+});
+
 const app = express();
 
-// Set up JSON body parser with increased limit for base64 images
-app.use(express.json({ limit: "25mb" }));
+// Increase JSON limit to support base64 image uploads
+app.use(express.json({ limit: "15mb" }));
 
-// Mock data of flower information from the original class_info.py
-const FLOWER_INFO: Record<string, { emoji: string; common_name: string; desc: string; color: string }> = {
-  daisy: {
-    emoji: "🌼",
-    common_name: "Daisy",
-    desc: "White petals surrounding a yellow center disk. One of the most widely recognized wildflowers, found across temperate climates worldwide.",
-    color: "#f4d35e",
-  },
-  dandelion: {
-    emoji: "🌾",
-    common_name: "Dandelion",
-    desc: "Bright yellow flower head that matures into the familiar white seed puff. Extremely common in lawns and open fields.",
-    color: "#f7b32b",
-  },
-  rose: {
-    emoji: "🌹",
-    common_name: "Rose",
-    desc: "Layered, spiraled petals, often fragrant. Cultivated in thousands of varieties across nearly every color.",
-    color: "#e0559b",
-  },
-  sunflower: {
-    emoji: "🌻",
-    common_name: "Sunflower",
-    desc: "Large flower head with yellow petals around a dark central disk packed with seeds. Known for heliotropism in young plants.",
-    color: "#f4a300",
-  },
-  tulip: {
-    emoji: "🌷",
-    common_name: "Tulip",
-    desc: "Cup-shaped flower with smooth, often vividly colored petals. Iconic spring bloom, especially associated with the Netherlands.",
-    color: "#8e2de2",
-  },
-};
-
-const DEFAULT_INFO = {
-  emoji: "🌸",
-  common_name: "Unknown",
-  desc: "No additional information available for this class.",
-  color: "#8e2de2",
-};
-
-// Hardcoded representative subset of demo images, served statically from /public/flowers
-const DEMO_IMAGES = [
+// Curator of sample images (mixing local assets and high-quality fallback URLs for missing categories)
+const SAMPLES = [
   {
     id: "daisy_1",
-    path: "flowers/daisy/100080576_f52e8ee070_n.jpg",
     class: "daisy",
-    name: "Classic Daisy",
+    name: "Classic Daisy Bloom",
+    path: "/flowers/daisy/100080576_f52e8ee070_n.jpg",
+    isLocal: true,
   },
   {
     id: "daisy_2",
-    path: "flowers/daisy/10140303196_b88d3d6cec.jpg",
     class: "daisy",
-    name: "Meadow Daisy",
+    name: "Sunlit Daisy Patch",
+    path: "/flowers/daisy/10172567486_2748826a8b.jpg",
+    isLocal: true,
   },
   {
     id: "dandelion_1",
-    path: "flowers/dandelion/10043234166_e6dd915111_n.jpg",
     class: "dandelion",
     name: "Golden Dandelion",
+    path: "/flowers/dandelion/10043234166_e6dd915111_n.jpg",
+    isLocal: true,
   },
   {
     id: "dandelion_2",
-    path: "flowers/dandelion/10200780773_c6051a7d71_n.jpg",
     class: "dandelion",
-    name: "Dandelion Seed Puff",
+    name: "Fluffy Seed Puff",
+    path: "/flowers/dandelion/10294487385_92a0676c7d_m.jpg",
+    isLocal: true,
   },
+  {
+    id: "rose_1",
+    class: "rose",
+    name: "Crimson Rose",
+    path: "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+  },
+  {
+    id: "sunflower_1",
+    class: "sunflower",
+    name: "Majestic Sunflower",
+    path: "https://images.unsplash.com/photo-1597848212624-a19eb35e2651?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+  },
+  {
+    id: "tulip_1",
+    class: "tulip",
+    name: "Spring Tulips",
+    path: "https://images.unsplash.com/photo-1520763185298-1b434c919102?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+  }
 ];
 
-// Lazy-initialization of Gemini SDK client
-let aiClient: GoogleGenAI | null = null;
+// 1. Healthcheck Route
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", apiReady: !!apiKey });
+});
 
-function getGeminiClient(): GoogleGenAI {
-  if (!aiClient) {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) {
-      throw new Error("GEMINI_API_KEY environment variable is not set");
-    }
-    aiClient = new GoogleGenAI({
-      apiKey: key,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
+// 2. Fetch Sample Images
+app.get("/api/samples", (req, res) => {
+  res.json(SAMPLES);
+});
+
+// Helper to download external image as base64 for Gemini
+async function downloadExternalImage(url: string): Promise<string> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download image from ${url}`);
   }
-  return aiClient;
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer).toString("base64");
 }
 
-// Resolve project root reliably whether running from source (ts-node/tsx) or
-// from the compiled dist/server bundle, and whether deployed on Render or
-// as a Vercel serverless function (process.cwd() differs across these).
-const PROJECT_ROOT = path.join(__dirname, "..");
-
-// ---------------------------------------------------------
-// API Routes
-// ---------------------------------------------------------
-
-// Health check — used by Render/uptime checks
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok" });
-});
-
-// Get list of built-in demo images
-app.get("/api/demo-images", (_req, res) => {
-  res.json({ demos: DEMO_IMAGES });
-});
-
-// Image Prediction Endpoint
-app.post("/api/predict", async (req, res) => {
-  const { image, mimeType, demoId } = req.body;
-
+// 3. Flower Detection Route using Gemini multimodal model
+app.post("/api/detect", async (req, res) => {
   try {
-    const hasApiKey = !!process.env.GEMINI_API_KEY;
+    const { image, sampleId } = req.body;
 
-    if (!hasApiKey && demoId) {
-      const demo = DEMO_IMAGES.find((d) => d.id === demoId);
-      if (demo) {
-        console.log(`Missing API Key — using local prediction for demo image: ${demo.name}`);
+    let base64Data = "";
+    let mimeType = "image/jpeg";
 
-        const predictedClass = demo.class;
-        const allProbs: Record<string, number> = {
-          daisy: 0.01,
-          dandelion: 0.01,
-          rose: 0.01,
-          sunflower: 0.01,
-          tulip: 0.01,
-        };
-        allProbs[predictedClass] = 0.96;
-
-        return res.json({
-          class_name: predictedClass,
-          confidence: 0.96,
-          all_probabilities: allProbs,
-          isMock: true,
-          warning: "Using local offline simulation. Set the GEMINI_API_KEY environment variable to enable real AI vision for custom photos!",
-        });
+    if (sampleId) {
+      // Find the selected sample
+      const sample = SAMPLES.find(s => s.id === sampleId);
+      if (!sample) {
+        return res.status(404).json({ error: "Sample image not found" });
       }
-    }
 
-    if (!hasApiKey) {
-      return res.status(400).json({
-        error: "GEMINI_API_KEY_MISSING",
-        message: "GEMINI_API_KEY is not configured on the server. Add it as an environment variable in your hosting provider's dashboard.",
-      });
-    }
-
-    let base64Data = image;
-    let finalMimeType = mimeType || "image/jpeg";
-
-    if (demoId && !image) {
-      const demo = DEMO_IMAGES.find((d) => d.id === demoId);
-      if (demo) {
-        const filePath = path.join(PROJECT_ROOT, "public", demo.path);
-        if (fs.existsSync(filePath)) {
-          const fileBuffer = fs.readFileSync(filePath);
+      if (sample.isLocal) {
+        // Read file from public folder
+        const localPath = path.join(process.cwd(), "public", sample.path);
+        if (fs.existsSync(localPath)) {
+          const fileBuffer = fs.readFileSync(localPath);
           base64Data = fileBuffer.toString("base64");
-          finalMimeType = "image/jpeg";
+          mimeType = sample.path.endsWith(".png") ? "image/png" : "image/jpeg";
+        } else {
+          return res.status(404).json({ error: `Local sample file does not exist at ${localPath}` });
         }
+      } else {
+        // Download external sample
+        base64Data = await downloadExternalImage(sample.path);
       }
+    } else if (image) {
+      // Extract base64 and mimeType from user dataUrl e.g. "data:image/png;base64,..."
+      const match = image.match(/^data:(image\/\w+);base64,(.+)$/);
+      if (match) {
+        mimeType = match[1];
+        base64Data = match[2];
+      } else {
+        // Assume direct base64
+        base64Data = image;
+      }
+    } else {
+      return res.status(400).json({ error: "No image data or sample ID provided" });
     }
 
     if (!base64Data) {
-      return res.status(400).json({
-        error: "MISSING_IMAGE",
-        message: "No image data or demo ID provided for prediction.",
+      return res.status(400).json({ error: "Empty image data obtained" });
+    }
+
+    if (!apiKey) {
+      return res.status(503).json({
+        error: "Gemini API key is not configured in the AI Studio platform yet. Please check your Settings > Secrets panel."
       });
     }
 
-    const ai = getGeminiClient();
-
+    // Call Gemini API with Structured Schema and automatic fallback model retry mechanism
     const imagePart = {
       inlineData: {
-        mimeType: finalMimeType,
+        mimeType,
         data: base64Data,
       },
     };
 
     const promptPart = {
-      text: `You are an expert botanist and flower species classification engine.
-Analyze this flower image and classify it into exactly one of the following 5 categories: "daisy", "dandelion", "rose", "sunflower", "tulip".
-
-If the image is not a flower or does not belong to any of these classes, still map it to the closest class but assign a low confidence.
-
-Return a JSON object conforming to this schema:
-{
-  "class_name": "string (one of: daisy, dandelion, rose, sunflower, tulip)",
-  "confidence": "number (a float between 0.0 and 1.0 representing your confidence level)",
-  "all_probabilities": {
-    "daisy": 0.0,
-    "dandelion": 0.0,
-    "rose": 0.0,
-    "sunflower": 0.0,
-    "tulip": 0.0
-  }
-}
-Note: The sum of all_probabilities should equal 1.0 (or very close to it). Ensure you return valid JSON and nothing else.`,
+      text: `Identify the flower in this image. 
+Choose the best fit from our recognized dataset classes: daisy, dandelion, rose, sunflower, tulip. 
+If the image is not a flower or plant, set isFlower to false and explain in the error field.
+For confidenceScores, calculate realistic probabilities for all five classes (daisy, dandelion, rose, sunflower, tulip) summing up to 100% based on visual characteristics. Ensure the winning class matches the 'class' field.`,
     };
 
-    console.log("Dispatching request to Gemini API...");
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: [imagePart, promptPart],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            class_name: {
-              type: Type.STRING,
-              description: "The classified flower class, must be one of: daisy, dandelion, rose, sunflower, tulip",
-            },
-            confidence: {
-              type: Type.NUMBER,
-              description: "Confidence probability between 0.0 and 1.0",
-            },
-            all_probabilities: {
-              type: Type.OBJECT,
-              description: "Object mapping all 5 classes to their respective probabilities",
-              properties: {
-                daisy: { type: Type.NUMBER },
-                dandelion: { type: Type.NUMBER },
-                rose: { type: Type.NUMBER },
-                sunflower: { type: Type.NUMBER },
-                tulip: { type: Type.NUMBER },
-              },
-              required: ["daisy", "dandelion", "rose", "sunflower", "tulip"],
-            },
-          },
-          required: ["class_name", "confidence", "all_probabilities"],
-        },
-      },
-    });
+    const candidateModels = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+    let lastError: any = null;
+    let response: any = null;
 
-    const textResponse = response.text;
-    if (!textResponse) {
-      throw new Error("No response text received from Gemini API");
+    for (const modelName of candidateModels) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          console.log(`Attempting classification with model: ${modelName} (Attempt ${attempt}/2)`);
+          response = await ai.models.generateContent({
+            model: modelName,
+            contents: { parts: [imagePart, promptPart] },
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  isFlower: {
+                    type: Type.BOOLEAN,
+                    description: "Whether the image is verified as a flower or plant."
+                  },
+                  class: {
+                    type: Type.STRING,
+                    description: "Identified flower category. Must be one of: daisy, dandelion, rose, sunflower, tulip, or unknown."
+                  },
+                  confidence: {
+                    type: Type.NUMBER,
+                    description: "Confidence percentage (0 to 100) of the identified class."
+                  },
+                  confidenceScores: {
+                    type: Type.ARRAY,
+                    description: "Confidence scores for all five classes summing up to exactly 100%.",
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        class: { type: Type.STRING },
+                        confidence: { type: Type.NUMBER }
+                      },
+                      required: ["class", "confidence"]
+                    }
+                  },
+                  scientificName: {
+                    type: Type.STRING,
+                    description: "Scientific botanical name."
+                  },
+                  description: {
+                    type: Type.STRING,
+                    description: "A rich, elegant 2-3 sentence botanical description of this flower species."
+                  },
+                  funFact: {
+                    type: Type.STRING,
+                    description: "An interesting and unique fun fact about this specific flower."
+                  },
+                  careInstructions: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: "3 concise care guidelines (e.g. Watering, Sunlight, Soil)."
+                  },
+                  error: {
+                    type: Type.STRING,
+                    description: "Error message explaining why identification is not possible or why it is not a flower."
+                  }
+                },
+                required: ["isFlower", "class", "confidence", "confidenceScores", "scientificName", "description", "funFact", "careInstructions"]
+              }
+            }
+          });
+
+          if (response && response.text) {
+            console.log(`Successfully completed classification using model: ${modelName} on attempt ${attempt}`);
+            break;
+          }
+        } catch (err: any) {
+          const errMsg = err?.message || String(err);
+          console.warn(`Model ${modelName} failed on attempt ${attempt}:`, errMsg);
+          lastError = err;
+
+          // If the error indicates a 404/not found/no longer available, don't retry this model candidate
+          if (errMsg.includes("404") || errMsg.includes("NOT_FOUND") || errMsg.includes("no longer available")) {
+            break;
+          }
+
+          // If we have another attempt, sleep for a short duration
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+          }
+        }
+      }
+
+      if (response && response.text) {
+        break; // Successfully got a response, exit the candidate loop
+      }
     }
 
-    const prediction = JSON.parse(textResponse.trim());
-    res.json(prediction);
+    if (!response || !response.text) {
+      throw lastError || new Error("All candidate models failed to generate a response");
+    }
+
+    const resultText = response.text;
+    const resultJson = JSON.parse(resultText);
+    res.json(resultJson);
+
   } catch (error: any) {
-    console.error("Prediction error:", error);
+    console.error("Classification error:", error);
     res.status(500).json({
-      error: "PREDICTION_FAILED",
-      message: error.message || "An error occurred during classification.",
+      error: "An error occurred during classification. Please make sure the image is valid and the API key is active.",
+      details: error.message || error
     });
   }
-});
-
-// Serve Flower facts dictionary directly so the UI is synchronized
-app.get("/api/flower-facts", (_req, res) => {
-  res.json({ facts: FLOWER_INFO, default: DEFAULT_INFO });
 });
 
 export default app;
