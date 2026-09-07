@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.local
+.vercel/
+*.log
+
+# legacy streamlit app
+venv/
+__pycache__/
+*.pyc
