@@ -154,10 +154,17 @@ app.post("/api/detect", async (req, res) => {
     };
 
     const promptPart = {
-      text: `Identify the flower in this image. 
-Choose the best fit from our recognized dataset classes: daisy, dandelion, rose, sunflower, tulip. 
-If the image is not a flower or plant, set isFlower to false and explain in the error field.
-For confidenceScores, calculate realistic probabilities for all five classes (daisy, dandelion, rose, sunflower, tulip) summing up to 100% based on visual characteristics. Ensure the winning class matches the 'class' field.`,
+      text: `You are a world-class botanical AI expert. Your task is to identify the exact flower or plant species in the provided image with 99.9% accuracy. 
+You are capable of identifying any of the 400,000+ plant and flower species in the world. 
+If the image does not show a flower, plant, or botanical element, set isFlower to false and specify the issue in the error field.
+If it is a flower or plant:
+1. Set isFlower to true.
+2. Set 'class' to the most accurate common name of the flower species (e.g., Orchid, Lily, Hibiscus, Lavender, Lotus, Iris, etc.).
+3. Provide the official scientific botanical name (e.g., 'Orchidaceae', 'Nelumbo nucifera').
+4. Write an extremely rich, elegant 3-4 sentence botanical description of this species.
+5. Provide a fascinating, unique fun fact.
+6. Provide 3 highly practical care instructions.
+7. For confidenceScores, calculate a realistic probability distribution (summing to exactly 100%) for the top 5 most closely related or visually similar botanical species/cultivars based on the image's features. The winning class must match the 'class' field and have the highest confidence score.`,
     };
 
     const candidateModels = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
@@ -182,7 +189,7 @@ For confidenceScores, calculate realistic probabilities for all five classes (da
                   },
                   class: {
                     type: Type.STRING,
-                    description: "Identified flower category. Must be one of: daisy, dandelion, rose, sunflower, tulip, or unknown."
+                    description: "Identified flower common name. Can be any plant/flower species in the world (e.g., Orchid, Lavender, Lotus, Lily, Iris, Hibiscus, Rose, Tulip)."
                   },
                   confidence: {
                     type: Type.NUMBER,
@@ -190,7 +197,7 @@ For confidenceScores, calculate realistic probabilities for all five classes (da
                   },
                   confidenceScores: {
                     type: Type.ARRAY,
-                    description: "Confidence scores for all five classes summing up to exactly 100%.",
+                    description: "Confidence scores for the top 5 visual matches or related species, summing up to exactly 100%.",
                     items: {
                       type: Type.OBJECT,
                       properties: {

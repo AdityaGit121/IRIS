@@ -271,7 +271,7 @@ export default function App() {
       }
 
       if (data.isFlower === false) {
-        setError(data.error || "The image uploaded does not appear to be a recognized flower species. Try uploading a daisy, dandelion, rose, sunflower, or tulip.");
+        setError(data.error || "The image uploaded does not appear to contain a recognized flower or plant species. Please ensure your photo contains clear botanical elements under good lighting.");
       } else {
         setResult({
           ...data,
@@ -350,7 +350,7 @@ export default function App() {
             transition={{ duration: 0.8, delay: 0.2 }}
             className="mt-2.5 text-sm sm:text-base text-stone-600 leading-relaxed font-light"
           >
-            Upload a photo of a flower. Our botanical assistant identifies daisy, dandelion, rose, sunflower, and tulip species with rich scientific guides.
+            Upload a photo of any flower. Our botanical assistant instantly identifies 400,000+ species globally using high-speed local machine learning and advanced Gemini AI vision.
           </motion.p>
         </header>
 
