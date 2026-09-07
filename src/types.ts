@@ -21,4 +21,5 @@ export interface DetectionResult {
   funFact: string;
   careInstructions: string[];
   error?: string;
+  source?: "Local TensorFlow.js Model" | "Gemini AI (Cloud Fallback)";
 }
