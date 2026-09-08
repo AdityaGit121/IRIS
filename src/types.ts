@@ -6,6 +6,7 @@ export interface SampleImage {
   name: string;
   path: string;
   isLocal: boolean;
+  expectedEngine?: "ml_trained" | "ai_cloud" | string;
 }
 
 export interface ConfidenceScore {
@@ -25,10 +26,7 @@ export interface DetectionResult {
   funFact: string;
   careInstructions: string[];
   error?: string;
-  source:
-    | "Trained ML Model (On-Device Dataset)"
-    | "Local ML Model (Learned Memory Cache)"
-    | "Cloud AI Vision & Internet Knowledge (Gemini)";
+  source: string;
   shiftReason?: string;
   pipelineStage?: "ml_trained" | "ml_learned" | "ai_cloud";
   isNewlyLearned?: boolean;

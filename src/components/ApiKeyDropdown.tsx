@@ -16,6 +16,7 @@ import {
   Zap,
   Info
 } from "lucide-react";
+import { verifyGeminiKeyDirect } from "../utils/geminiDirect";
 
 interface ApiKeyDropdownProps {
   userApiKey: string;
@@ -116,54 +117,63 @@ export function ApiKeyDropdown({
     // Apply key immediately so user doesn't lose progress
     onApiKeyChange(cleaned);
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
     try {
-      const res = await fetch("/api/verify-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: cleaned }),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      let data: any = null;
-      try {
-        data = await res.json();
-      } catch (jsonErr) {
-        data = { valid: true, warning: "Key received and stored." };
-      }
-
-      if (data && data.valid) {
+      // First attempt direct browser verification with Google Gemini REST endpoint
+      const directResult = await verifyGeminiKeyDirect(cleaned);
+      if (directResult.valid) {
         setVerifyStatus({
           tested: true,
           valid: true,
-          message: data.warning || data.message || "Key authenticated & active for all flower scans!"
+          message: directResult.warning || directResult.message || "Key authenticated & active for all flower scans!"
         });
-      } else {
+        return;
+      }
+
+      // If direct returned an explicit invalid key error, show it
+      if (directResult.error && (directResult.error.includes("Invalid") || directResult.error.includes("Permission"))) {
         setVerifyStatus({
           tested: true,
           valid: false,
-          message: data?.error || "Key validation was inconclusive. Your key remains saved locally."
+          message: directResult.error
         });
+        return;
       }
+
+      // Secondary server check if available
+      try {
+        const res = await fetch("/api/verify-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey: cleaned }),
+        });
+
+        const contentType = res.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const data = await res.json();
+          if (data && data.valid) {
+            setVerifyStatus({
+              tested: true,
+              valid: true,
+              message: data.warning || data.message || "Key verified & active!"
+            });
+            return;
+          }
+        }
+      } catch (serverErr) {
+        // Server offline or static deployment
+      }
+
+      setVerifyStatus({
+        tested: true,
+        valid: true,
+        message: "Key saved locally! Ready for botanical detections."
+      });
     } catch (err: any) {
-      clearTimeout(timeoutId);
-      if (err.name === "AbortError") {
-        setVerifyStatus({
-          tested: true,
-          valid: true,
-          message: "Verification request timed out, but your key has been saved and is ready for use."
-        });
-      } else {
-        setVerifyStatus({
-          tested: true,
-          valid: true,
-          message: "Key saved locally! (Backend verification bypassed due to network proxy latency)."
-        });
-      }
+      setVerifyStatus({
+        tested: true,
+        valid: true,
+        message: "Key saved locally in browser storage."
+      });
     } finally {
       setIsVerifying(false);
     }
@@ -186,7 +196,7 @@ export function ApiKeyDropdown({
     <div className="relative inline-block text-left" ref={dropdownRef}>
       {/* Top Trigger Button */}
       <button
-        id="api-key-dropdown-trigger"
+        id="api-key-header-button"
         onClick={() => setIsOpen(!isOpen)}
         className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all shadow-xs border cursor-pointer ${
           isCustomActive

@@ -36,6 +36,7 @@ import {
   LearnedSpecies,
   extractImageFingerprint
 } from "./utils/localKnowledgeBase";
+import { identifyFlowerWithGeminiDirect } from "./utils/geminiDirect";
 
 const FLOWER_EMOJI_MAP: Record<string, { emoji: string; accent: string; bg: string; border: string; textClass: string }> = {
   daisy: { emoji: "🌼", accent: "#f59e0b", bg: "bg-amber-50/80", border: "border-amber-200", textClass: "text-amber-800" },
@@ -86,6 +87,73 @@ function getFlowerPalette(name: string) {
   };
 }
 
+const DEFAULT_SAMPLES: SampleImage[] = [
+  {
+    id: "daisy_1",
+    class: "daisy",
+    name: "Daisy (Trained ML)",
+    path: "https://images.unsplash.com/photo-1606041008023-472dfb5e530f?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ml_trained"
+  },
+  {
+    id: "rose_1",
+    class: "rose",
+    name: "Red Rose (Trained ML)",
+    path: "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ml_trained"
+  },
+  {
+    id: "sunflower_1",
+    class: "sunflower",
+    name: "Sunflower (Trained ML)",
+    path: "https://images.unsplash.com/photo-1597848212624-a19eb35e2651?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ml_trained"
+  },
+  {
+    id: "dandelion_1",
+    class: "dandelion",
+    name: "Dandelion (Trained ML)",
+    path: "https://images.unsplash.com/photo-1527631746610-bca00a040d60?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ml_trained"
+  },
+  {
+    id: "orchid_1",
+    class: "orchid",
+    name: "Exotic Orchid (Shifts to AI)",
+    path: "https://images.unsplash.com/photo-1525310072745-f49212b5ac6d?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ai_cloud"
+  },
+  {
+    id: "lotus_1",
+    class: "lotus",
+    name: "Sacred Lotus (Shifts to AI)",
+    path: "https://images.unsplash.com/photo-1508615039623-a25605d2b022?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ai_cloud"
+  },
+  {
+    id: "hibiscus_1",
+    class: "hibiscus",
+    name: "Tropical Hibiscus (Shifts to AI)",
+    path: "https://images.unsplash.com/photo-1550950158-d0d960dff51b?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ai_cloud"
+  },
+  {
+    id: "birdofparadise_1",
+    class: "bird of paradise",
+    name: "Bird of Paradise (Shifts to AI)",
+    path: "https://images.unsplash.com/photo-1544816155-12df9643f363?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ai_cloud"
+  }
+];
+
 export default function App() {
   // Custom Selection between Local ML vs Cloud AI vs Auto Dual Engine
   const [detectionMode, setDetectionMode] = useState<DetectionMode>("local");
@@ -111,7 +179,7 @@ export default function App() {
   const [localUnindexedNotice, setLocalUnindexedNotice] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [apiOnline, setApiOnline] = useState<boolean>(true);
-  const [samples, setSamples] = useState<SampleImage[]>([]);
+  const [samples, setSamples] = useState<SampleImage[]>(DEFAULT_SAMPLES);
   const [isCatalogOpen, setIsCatalogOpen] = useState<boolean>(false);
   const [isLearnedModalOpen, setIsLearnedModalOpen] = useState<boolean>(false);
 
@@ -277,42 +345,70 @@ export default function App() {
     setAnalysisLog("Executing Cloud AI Vision with global internet taxonomy (400,000+ species)...");
 
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (userApiKey && userApiKey.trim()) {
-        headers["x-gemini-api-key"] = userApiKey.trim();
+      let data: any = null;
+      let serverSucceeded = false;
+
+      // 1. First attempt via backend API route (works on full-stack dev/server environments)
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (userApiKey && userApiKey.trim()) {
+          headers["x-gemini-api-key"] = userApiKey.trim();
+        }
+
+        const payload: any = {
+          image: selectedSampleId ? undefined : imagePreview,
+          sampleId: selectedSampleId || undefined,
+          customApiKey: userApiKey ? userApiKey.trim() : undefined,
+          shiftReason: reason || "User explicitly selected Cloud AI Multimodal Model"
+        };
+
+        const response = await fetch("/api/detect", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+        });
+
+        const contentType = response.headers.get("content-type") || "";
+
+        if (response.ok && contentType.includes("application/json")) {
+          const parsed = await response.json();
+          if (parsed && typeof parsed.isFlower === "boolean") {
+            data = parsed;
+            serverSucceeded = true;
+          }
+        }
+      } catch (serverErr) {
+        console.warn("Backend API route not reachable (typical on Vercel static deployments):", serverErr);
       }
 
-      const payload: any = {
-        image: selectedSampleId ? undefined : imagePreview,
-        sampleId: selectedSampleId || undefined,
-        customApiKey: userApiKey ? userApiKey.trim() : undefined,
-        shiftReason: reason || "User explicitly selected Cloud AI Multimodal Model"
-      };
-
-      const response = await fetch("/api/detect", {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      let data: any = null;
-      const contentType = response.headers.get("content-type") || "";
-
-      if (contentType.includes("application/json")) {
-        try {
-          data = await response.json();
-        } catch (parseErr) {
-          console.warn("JSON parse error from server:", parseErr);
+      // 2. If backend was unreachable or static (e.g. Vercel SPA) and user has an API Key, run direct browser Gemini
+      if (!serverSucceeded) {
+        if (userApiKey && userApiKey.trim() && imagePreview) {
+          setAnalysisLog("Running direct browser Gemini Multimodal Vision...");
+          try {
+            data = await identifyFlowerWithGeminiDirect(
+              imagePreview,
+              userApiKey.trim(),
+              reason || "Multimodal Cloud AI Vision",
+              previewImgRef.current
+            );
+          } catch (directErr: any) {
+            console.error("Direct browser Gemini error:", directErr);
+            setError(directErr?.message || "Cloud AI was unable to identify this specimen. Please verify your Gemini API key in the top bar.");
+            return;
+          }
+        } else if (!data) {
+          // No server and no user API key provided
+          setError(
+            "Gemini API Key Required: When running on Vercel / browser static mode, please click 'API Key Input' in the top header to enter your free Google Gemini API Key."
+          );
+          return;
         }
       }
 
       if (!data) {
-        const rawText = await response.text().catch(() => "");
-        console.warn("Non-JSON server response:", rawText);
-        data = {
-          isFlower: false,
-          error: "Cloud AI Vision was unable to identify this specimen. Please verify that the flower is in clear focus and try again."
-        };
+        setError("Cloud AI Vision was unable to identify this specimen. Please verify that the flower is in clear focus and try again.");
+        return;
       }
 
       if (data.isFlower === false) {
@@ -350,7 +446,7 @@ export default function App() {
 
         setResult({
           ...data,
-          source: keyNotice,
+          source: data.source || keyNotice,
           pipelineStage: "ai_cloud",
           isNewlyLearned: true,
           shiftReason: data.shiftReason || reason || "Identified via Gemini Cloud AI Vision and auto-learned into Local ML memory."
@@ -358,7 +454,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Cloud AI Analysis Error:", err);
-      setError("Identification could not be completed at this time. Please check your network connection or provide your Gemini API key in the top 'API Key Input' dropdown.");
+      setError(err?.message || "Identification could not be completed. Please check your network connection or enter your Gemini API key in the 'API Key Input' dropdown at the top.");
     } finally {
       setIsAnalyzing(false);
       setAnalysisPhase("idle");
@@ -1023,28 +1119,57 @@ export default function App() {
                 </motion.div>
               )}
 
-              {/* 3. Error State */}
+              {/* 3. Error State with Actionable Guidance */}
               {error && !isAnalyzing && (
                 <motion.div
                   key="error"
                   initial={{ opacity: 0, scale: 0.98 }}
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.98 }}
-                  className="bg-red-50/50 border border-red-200 rounded-2xl p-8 shadow-sm flex flex-col items-center text-center space-y-4 min-h-[300px] justify-center"
+                  className="bg-red-50/60 border border-red-200 rounded-2xl p-8 shadow-sm flex flex-col items-center text-center space-y-5 min-h-[340px] justify-center"
                 >
-                  <div className="w-12 h-12 bg-red-100 text-red-800 rounded-full flex items-center justify-center">
+                  <div className="w-12 h-12 bg-red-100 text-red-800 rounded-full flex items-center justify-center shadow-xs">
                     <AlertCircle className="w-6 h-6" />
                   </div>
                   <div className="max-w-md space-y-2">
                     <h3 className="text-base font-bold text-red-950">Identification Halted</h3>
-                    <p className="text-sm text-red-800/90 leading-relaxed font-light">{error}</p>
+                    <p className="text-sm text-red-800/90 leading-relaxed font-normal">{error}</p>
                   </div>
-                  <div className="flex gap-2">
+
+                  <div className="flex flex-wrap gap-2.5 justify-center max-w-md pt-2">
+                    {(!userApiKey || error.toLowerCase().includes("api key") || error.toLowerCase().includes("vercel")) && (
+                      <button
+                        onClick={() => {
+                          const trigger = document.getElementById("api-key-header-button");
+                          if (trigger) {
+                            trigger.click();
+                            trigger.scrollIntoView({ behavior: "smooth" });
+                          }
+                        }}
+                        className="bg-purple-800 hover:bg-purple-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Key className="w-3.5 h-3.5" />
+                        <span>Open API Key Input</span>
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => {
+                        setDetectionMode("local");
+                        setError(null);
+                        runDetection();
+                      }}
+                      className="bg-emerald-800 hover:bg-emerald-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Cpu className="w-3.5 h-3.5" />
+                      <span>Try with Local ML Model</span>
+                    </button>
+
                     <button
                       onClick={resetApp}
-                      className="bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-xs font-semibold px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                      className="bg-white hover:bg-stone-100 border border-stone-200 text-stone-700 text-xs font-semibold px-4 py-2.5 rounded-xl transition-colors cursor-pointer"
                     >
-                      Clear and Try Another Photo
+                      Clear & Try Another Photo
                     </button>
                   </div>
                 </motion.div>

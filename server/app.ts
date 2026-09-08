@@ -110,7 +110,15 @@ app.post("/api/verify-key", async (req, res) => {
     });
 
     // Test across models with rapid fallback
-    const candidateModels = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+    const candidateModels = [
+      "gemini-2.5-flash",
+      "gemini-3.8-flash",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
+      "gemini-flash-latest",
+      "gemini-3.1-flash-lite",
+      "gemini-3.6-flash"
+    ];
     let success = false;
     let warningMsg: string | undefined = undefined;
     let lastErrStr = "";
@@ -296,7 +304,15 @@ If it is a flower or plant:
 10. For confidenceScores, calculate a realistic probability distribution (summing to exactly 100%) for the top 5 most closely related or visually similar botanical species/cultivars based on the image's features. The winning class must match the 'class' field and have the highest confidence score.`,
     };
 
-    const candidateModels = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+    const candidateModels = [
+      "gemini-2.5-flash",
+      "gemini-3.8-flash",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
+      "gemini-flash-latest",
+      "gemini-3.1-flash-lite",
+      "gemini-3.6-flash"
+    ];
     let lastError: any = null;
     let response: any = null;
 
