@@ -19,56 +19,55 @@ const app = express();
 // Increase JSON limit to support base64 image uploads
 app.use(express.json({ limit: "15mb" }));
 
-// Curator of sample images (mixing local assets and high-quality fallback URLs for missing categories)
+// Curator of sample images (demonstrating both Trained ML dataset matches and Cloud AI shifts)
 const SAMPLES = [
   {
     id: "daisy_1",
     class: "daisy",
-    name: "Classic Daisy Bloom",
-    path: "/flowers/daisy/100080576_f52e8ee070_n.jpg",
-    isLocal: true,
-  },
-  {
-    id: "daisy_2",
-    class: "daisy",
-    name: "Sunlit Daisy Patch",
-    path: "/flowers/daisy/10172567486_2748826a8b.jpg",
-    isLocal: true,
-  },
-  {
-    id: "dandelion_1",
-    class: "dandelion",
-    name: "Golden Dandelion",
-    path: "/flowers/dandelion/10043234166_e6dd915111_n.jpg",
-    isLocal: true,
-  },
-  {
-    id: "dandelion_2",
-    class: "dandelion",
-    name: "Fluffy Seed Puff",
-    path: "/flowers/dandelion/10294487385_92a0676c7d_m.jpg",
-    isLocal: true,
+    name: "Daisy (Trained ML)",
+    path: "https://images.unsplash.com/photo-1606041008023-472dfb5e530f?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ml_trained"
   },
   {
     id: "rose_1",
     class: "rose",
-    name: "Crimson Rose",
+    name: "Red Rose (Trained ML)",
     path: "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=600&q=80",
     isLocal: false,
+    expectedEngine: "ml_trained"
   },
   {
     id: "sunflower_1",
     class: "sunflower",
-    name: "Majestic Sunflower",
+    name: "Sunflower (Trained ML)",
     path: "https://images.unsplash.com/photo-1597848212624-a19eb35e2651?auto=format&fit=crop&w=600&q=80",
     isLocal: false,
+    expectedEngine: "ml_trained"
   },
   {
-    id: "tulip_1",
-    class: "tulip",
-    name: "Spring Tulips",
-    path: "https://images.unsplash.com/photo-1520763185298-1b434c919102?auto=format&fit=crop&w=600&q=80",
+    id: "orchid_1",
+    class: "orchid",
+    name: "Exotic Orchid (Shifts to AI)",
+    path: "https://images.unsplash.com/photo-1525310072745-f49212b5ac6d?auto=format&fit=crop&w=600&q=80",
     isLocal: false,
+    expectedEngine: "ai_cloud"
+  },
+  {
+    id: "lotus_1",
+    class: "lotus",
+    name: "Sacred Lotus (Shifts to AI)",
+    path: "https://images.unsplash.com/photo-1508615039623-a25605d2b022?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ai_cloud"
+  },
+  {
+    id: "hibiscus_1",
+    class: "hibiscus",
+    name: "Tropical Hibiscus (Shifts to AI)",
+    path: "https://images.unsplash.com/photo-1550950158-d0d960dff51b?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ai_cloud"
   }
 ];
 
@@ -154,17 +153,20 @@ app.post("/api/detect", async (req, res) => {
     };
 
     const promptPart = {
-      text: `You are a world-class botanical AI expert. Your task is to identify the exact flower or plant species in the provided image with 99.9% accuracy. 
-You are capable of identifying any of the 400,000+ plant and flower species in the world. 
+      text: `You are a world-class botanical AI expert and taxonomist. The user's application attempted to identify this flower using an on-device trained ML model, but shifted to you (Cloud AI Vision) because the image was unclear, complex, or the flower species was not in the local trained dataset.
+Your task is to identify the exact flower or plant species in the provided image with maximum botanical precision (up to 99.9% accuracy), drawing upon global internet botanical knowledge covering 400,000+ species.
 If the image does not show a flower, plant, or botanical element, set isFlower to false and specify the issue in the error field.
 If it is a flower or plant:
 1. Set isFlower to true.
-2. Set 'class' to the most accurate common name of the flower species (e.g., Orchid, Lily, Hibiscus, Lavender, Lotus, Iris, etc.).
-3. Provide the official scientific botanical name (e.g., 'Orchidaceae', 'Nelumbo nucifera').
-4. Write an extremely rich, elegant 3-4 sentence botanical description of this species.
-5. Provide a fascinating, unique fun fact.
-6. Provide 3 highly practical care instructions.
-7. For confidenceScores, calculate a realistic probability distribution (summing to exactly 100%) for the top 5 most closely related or visually similar botanical species/cultivars based on the image's features. The winning class must match the 'class' field and have the highest confidence score.`,
+2. Set 'class' to the most accurate common name of the flower species (e.g., Orchid, Lily, Hibiscus, Lavender, Lotus, Iris, Bluebell, Bird of Paradise, etc.).
+3. Provide the official scientific botanical name (e.g., 'Nelumbo nucifera', 'Passiflora caerulea').
+4. Specify the botanical family (e.g., 'Orchidaceae', 'Asteraceae', 'Fabaceae').
+5. Specify the native geographical region or primary habitat.
+6. Provide a clear shiftReason explaining why Cloud AI was leveraged for this image (e.g., "Specimen is outside local offline trained dataset", "Complex floral angle and petal occlusion resolved via multimodal vision", or "Sub-species requires internet-scale taxonomic resolution").
+7. Write an extremely rich, elegant 3-4 sentence botanical description of this species.
+8. Provide a fascinating, unique fun fact.
+9. Provide 3 highly practical care instructions.
+10. For confidenceScores, calculate a realistic probability distribution (summing to exactly 100%) for the top 5 most closely related or visually similar botanical species/cultivars based on the image's features. The winning class must match the 'class' field and have the highest confidence score.`,
     };
 
     const candidateModels = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
@@ -210,6 +212,18 @@ If it is a flower or plant:
                   scientificName: {
                     type: Type.STRING,
                     description: "Scientific botanical name."
+                  },
+                  botanicalFamily: {
+                    type: Type.STRING,
+                    description: "Botanical family name (e.g., Asteraceae, Rosaceae, Orchidaceae)."
+                  },
+                  nativeRegion: {
+                    type: Type.STRING,
+                    description: "Native geographical region or primary habitat."
+                  },
+                  shiftReason: {
+                    type: Type.STRING,
+                    description: "Brief reason explaining why Cloud AI was leveraged for this image."
                   },
                   description: {
                     type: Type.STRING,

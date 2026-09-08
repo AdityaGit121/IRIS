@@ -17,9 +17,13 @@ export interface DetectionResult {
   confidence: number;
   confidenceScores: ConfidenceScore[];
   scientificName: string;
+  botanicalFamily?: string;
+  nativeRegion?: string;
   description: string;
   funFact: string;
   careInstructions: string[];
   error?: string;
-  source?: "Local TensorFlow.js Model" | "Gemini AI (Cloud Fallback)";
+  source: "Trained ML Model (On-Device Dataset)" | "Cloud AI Vision & Internet Knowledge (Gemini)";
+  shiftReason?: string;
+  pipelineStage?: "ml_trained" | "ai_cloud";
 }

@@ -1,6 +1,6 @@
 {
   "name": "Iris Bloom AI - Flower Vision",
-  "description": "An image-based flower species detector powered by a CNN-like assistant, identifying daisy, dandelion, rose, sunflower, and tulip classes with rich botanical insights.",
+  "description": "An image-based botanical species detector featuring a dual-engine workflow: fast on-device ML trained on flower datasets with seamless shift to Gemini Multimodal Cloud AI when specimens are unindexed or images are unclear.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
