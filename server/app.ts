@@ -3,16 +3,8 @@ import path from "path";
 import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 
-// Initialize Gemini Client
-const apiKey = process.env.GEMINI_API_KEY;
-const ai = new GoogleGenAI({
-  apiKey: apiKey || "",
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
-  }
-});
+// Initialize Default Gemini Client
+const defaultApiKey = process.env.GEMINI_API_KEY;
 
 const app = express();
 
@@ -89,10 +81,60 @@ const SAMPLES = [
 
 // 1. Healthcheck Route
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", apiReady: !!apiKey });
+  res.json({ status: "ok", apiReady: !!defaultApiKey, defaultApiReady: !!defaultApiKey });
 });
 
-// 2. Fetch Sample Images
+// 2. Validate User Gemini API Key
+app.post("/api/verify-key", async (req, res) => {
+  try {
+    const { apiKey } = req.body;
+    const keyToTest = (apiKey || req.headers['x-gemini-api-key'] || "").toString().trim();
+
+    if (!keyToTest) {
+      return res.status(400).json({ valid: false, error: "API Key cannot be empty." });
+    }
+
+    if (keyToTest.length < 15) {
+      return res.status(400).json({ valid: false, error: "Invalid API Key format." });
+    }
+
+    const testAi = new GoogleGenAI({
+      apiKey: keyToTest,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+
+    // Make a lightweight test request
+    const testResp = await testAi.models.generateContent({
+      model: "gemini-3.6-flash",
+      contents: "Hello",
+    });
+
+    if (testResp && testResp.text) {
+      return res.json({ valid: true, message: "Gemini API Key verified successfully!" });
+    } else {
+      return res.status(400).json({ valid: false, error: "Unable to verify API Key with Google Gemini." });
+    }
+  } catch (err: any) {
+    const errorMsg = err?.message || String(err);
+    console.warn("Key verification failure:", errorMsg);
+    let userFriendly = "Invalid Gemini API Key or unauthorized access.";
+    if (errorMsg.includes("API_KEY_INVALID") || errorMsg.includes("400")) {
+      userFriendly = "Invalid API Key. Please check the key from Google AI Studio.";
+    } else if (errorMsg.includes("403") || errorMsg.includes("PERMISSION_DENIED")) {
+      userFriendly = "Permission denied. Please ensure the Gemini API is enabled for this key.";
+    } else if (errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED")) {
+      userFriendly = "API Key is valid but currently rate-limited on the free tier.";
+      return res.json({ valid: true, warning: userFriendly });
+    }
+    return res.status(400).json({ valid: false, error: userFriendly });
+  }
+});
+
+// 3. Fetch Sample Images
 app.get("/api/samples", (req, res) => {
   res.json(SAMPLES);
 });
@@ -107,10 +149,14 @@ async function downloadExternalImage(url: string): Promise<string> {
   return Buffer.from(arrayBuffer).toString("base64");
 }
 
-// 3. Flower Detection Route using Gemini multimodal model
+// 4. Flower Detection Route using user's individual or default Gemini key
 app.post("/api/detect", async (req, res) => {
   try {
-    const { image, sampleId } = req.body;
+    const { image, sampleId, customApiKey } = req.body;
+    const headerKey = req.headers['x-gemini-api-key'] as string | undefined;
+
+    // Resolve individual user key with fallback to system default
+    const effectiveApiKey = (customApiKey || headerKey || defaultApiKey || "").toString().trim();
 
     let base64Data = "";
     let mimeType = "image/jpeg";
@@ -160,12 +206,22 @@ app.post("/api/detect", async (req, res) => {
       return res.status(400).json({ isFlower: false, error: "Empty image data obtained. Please choose a valid image file." });
     }
 
-    if (!apiKey) {
-      return res.status(503).json({
+    if (!effectiveApiKey) {
+      return res.status(400).json({
         isFlower: false,
-        error: "Gemini API key is not configured in the AI Studio platform yet. Please check your Settings > Secrets panel."
+        error: "No Gemini API Key provided. Please open the 'API Key Input' dropdown at the top to enter your individual Gemini API Key."
       });
     }
+
+    // Instantiate Gemini Client with the active user's key
+    const ai = new GoogleGenAI({
+      apiKey: effectiveApiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
 
     // Call Gemini API with Structured Schema and automatic fallback model retry mechanism
     const imagePart = {
@@ -192,7 +248,7 @@ If it is a flower or plant:
 10. For confidenceScores, calculate a realistic probability distribution (summing to exactly 100%) for the top 5 most closely related or visually similar botanical species/cultivars based on the image's features. The winning class must match the 'class' field and have the highest confidence score.`,
     };
 
-    const candidateModels = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+    const candidateModels = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
     let lastError: any = null;
     let response: any = null;
 
@@ -280,14 +336,23 @@ If it is a flower or plant:
           console.warn(`Model ${modelName} failed on attempt ${attempt}:`, errMsg);
           lastError = err;
 
-          // If the error indicates a 404/not found/no longer available, don't retry this model candidate
-          if (errMsg.includes("404") || errMsg.includes("NOT_FOUND") || errMsg.includes("no longer available")) {
+          // If the model is not found, deprecated, or unavailable, jump to the next candidate model immediately
+          if (
+            errMsg.includes("404") ||
+            errMsg.includes("NOT_FOUND") ||
+            errMsg.includes("no longer available") ||
+            errMsg.includes("503") ||
+            errMsg.includes("UNAVAILABLE") ||
+            errMsg.includes("high demand") ||
+            errMsg.includes("RESOURCE_EXHAUSTED") ||
+            errMsg.includes("429")
+          ) {
             break;
           }
 
-          // If we have another attempt, sleep for a short duration
+          // If we have another attempt for a transient network issue, sleep briefly
           if (attempt < 2) {
-            await new Promise((resolve) => setTimeout(resolve, 800));
+            await new Promise((resolve) => setTimeout(resolve, 600));
           }
         }
       }

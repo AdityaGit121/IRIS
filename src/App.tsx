@@ -4,7 +4,6 @@ import {
   Upload,
   Image as ImageIcon,
   Sparkles,
-  CheckCircle,
   AlertCircle,
   Info,
   Droplet,
@@ -17,18 +16,26 @@ import {
   X,
   Cpu,
   Globe,
-  ArrowRight,
-  ShieldCheck,
   Zap,
   Layers,
-  BookOpen
+  BookOpen,
+  Brain,
+  Key
 } from "lucide-react";
 import * as tf from "@tensorflow/tfjs";
 import * as mobilenet from "@tensorflow-models/mobilenet";
-import { FLOWER_DATASET } from "./flowerDataset";
-import { SampleImage, DetectionResult, ConfidenceScore } from "./types";
+import { SampleImage, DetectionResult, ConfidenceScore, DetectionMode } from "./types";
 import { SpeciesCatalogModal } from "./components/SpeciesCatalogModal";
+import { LearnedKnowledgeModal } from "./components/LearnedKnowledgeModal";
+import { ApiKeyDropdown } from "./components/ApiKeyDropdown";
 import { classifyBotanicalSpecimen } from "./utils/botanicalClassifier";
+import {
+  getLearnedSpecies,
+  saveLearnedSpecies,
+  getCombinedBotanicalDataset,
+  LearnedSpecies,
+  extractImageFingerprint
+} from "./utils/localKnowledgeBase";
 
 const FLOWER_EMOJI_MAP: Record<string, { emoji: string; accent: string; bg: string; border: string; textClass: string }> = {
   daisy: { emoji: "🌼", accent: "#f59e0b", bg: "bg-amber-50/80", border: "border-amber-200", textClass: "text-amber-800" },
@@ -80,19 +87,37 @@ function getFlowerPalette(name: string) {
 }
 
 export default function App() {
+  // Custom Selection between Local ML vs Cloud AI vs Auto Dual Engine
+  const [detectionMode, setDetectionMode] = useState<DetectionMode>("local");
+
+  // User's Individual Gemini API Key stored in browser localStorage
+  const [userApiKey, setUserApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem("user_gemini_api_key") || "";
+    } catch {
+      return "";
+    }
+  });
+
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedSampleId, setSelectedSampleId] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
-  const [analysisPhase, setAnalysisPhase] = useState<"idle" | "ml_scanning" | "ml_matched" | "shifting_to_ai" | "ai_searching">("idle");
+  const [analysisPhase, setAnalysisPhase] = useState<"idle" | "ml_scanning" | "ml_matched" | "ml_not_found" | "shifting_to_ai" | "ai_searching">("idle");
   const [shiftNotice, setShiftNotice] = useState<string | null>(null);
   const [analysisLog, setAnalysisLog] = useState<string>("");
   const [result, setResult] = useState<DetectionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [localUnindexedNotice, setLocalUnindexedNotice] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [apiOnline, setApiOnline] = useState<boolean>(true);
   const [samples, setSamples] = useState<SampleImage[]>([]);
   const [isCatalogOpen, setIsCatalogOpen] = useState<boolean>(false);
+  const [isLearnedModalOpen, setIsLearnedModalOpen] = useState<boolean>(false);
+
+  // Continual Learning Engine state
+  const [learnedSpeciesList, setLearnedSpeciesList] = useState<LearnedSpecies[]>([]);
+  const [latestLearnedNotice, setLatestLearnedNotice] = useState<string | null>(null);
 
   // TensorFlow.js & On-Device ML state
   const [mlModel, setMlModel] = useState<mobilenet.MobileNet | null>(null);
@@ -101,8 +126,29 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewImgRef = useRef<HTMLImageElement>(null);
 
-  // Initialize On-Device ML, Check Health & Load Samples on mount
+  const handleApiKeyChange = (newKey: string) => {
+    setUserApiKey(newKey);
+    try {
+      if (newKey) {
+        localStorage.setItem("user_gemini_api_key", newKey);
+      } else {
+        localStorage.removeItem("user_gemini_api_key");
+      }
+    } catch (e) {
+      console.warn("Could not access localStorage for API Key:", e);
+    }
+  };
+
+  // Refresh learned species from storage
+  const refreshLearnedSpecies = () => {
+    const list = getLearnedSpecies();
+    setLearnedSpeciesList(list);
+  };
+
+  // Initialize On-Device ML, Check Health, Load Samples & Load Learned Species on mount
   useEffect(() => {
+    refreshLearnedSpecies();
+
     async function initSystem() {
       // Check Health
       try {
@@ -158,6 +204,8 @@ export default function App() {
       setError(null);
       setResult(null);
       setShiftNotice(null);
+      setLocalUnindexedNotice(null);
+      setLatestLearnedNotice(null);
 
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -189,6 +237,8 @@ export default function App() {
         setError(null);
         setResult(null);
         setShiftNotice(null);
+        setLocalUnindexedNotice(null);
+        setLatestLearnedNotice(null);
 
         const reader = new FileReader();
         reader.onloadend = () => {
@@ -206,7 +256,7 @@ export default function App() {
     fileInputRef.current?.click();
   };
 
-  // Select a sample flower for instant testing of ML or AI Shift
+  // Select a sample flower for instant testing
   const handleSelectSample = (sample: SampleImage) => {
     setSelectedFile(null);
     setSelectedSampleId(sample.id);
@@ -214,111 +264,37 @@ export default function App() {
     setError(null);
     setResult(null);
     setShiftNotice(null);
+    setLocalUnindexedNotice(null);
+    setLatestLearnedNotice(null);
   };
 
-  // Two-Stage Dual-Engine Classification Workflow:
-  // 1. Trained ML Model (On-Device 106-species catalog search)
-  // 2. If unclear or unindexed, shift to Cloud AI Vision (API Key + Internet Knowledge)
-  const runDetection = async () => {
-    if (!imagePreview) {
-      setError("Please upload or choose a flower image first.");
-      return;
-    }
-
+  // Core Execution Flow for Cloud AI Multimodal Model with Automatic Continual Learning to Local ML
+  const runCloudAIDetection = async (reason?: string) => {
     setIsAnalyzing(true);
     setError(null);
-    setResult(null);
-    setShiftNotice(null);
-
-    // Stage 1: Analyze entire image via ML model trained on 106 botanical species
-    setAnalysisPhase("ml_scanning");
-    setAnalysisLog("Stage 1: Scanning on-device convolutional features & 106-species botanical catalog...");
-
-    let mobileNetPreds: Array<{ className: string; probability: number }> = [];
-
-    if (mlModel && previewImgRef.current) {
-      try {
-        const mobilenetTask = mlModel.classify(previewImgRef.current);
-        const timeoutTask = new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 1500));
-        mobileNetPreds = await Promise.race([mobilenetTask, timeoutTask]);
-      } catch (err) {
-        console.warn("MobileNet tensor extraction note:", err);
-      }
-    }
-
-    // Brief pacing pause to let user observe Stage 1 execution
-    await new Promise((resolve) => setTimeout(resolve, 400));
-
-    // Execute high-accuracy on-device botanical vision classification
-    let botanicalMatch: any = null;
-    if (previewImgRef.current) {
-      try {
-        botanicalMatch = await classifyBotanicalSpecimen(previewImgRef.current, mobileNetPreds);
-      } catch (classifierErr) {
-        console.warn("On-device botanical classifier error:", classifierErr);
-      }
-    }
-
-    const matchedKey = botanicalMatch?.matchedKey;
-    const confidence = botanicalMatch?.confidence || 0;
-
-    // Case A: Input image successfully identified by trained data (>= 40% confidence)
-    if (matchedKey && FLOWER_DATASET[matchedKey] && confidence >= 40) {
-      setAnalysisPhase("ml_matched");
-      setAnalysisLog(`Specimen successfully identified in trained flower dataset: ${matchedKey.toUpperCase()} (${confidence}% confidence).`);
-      const localDetail = FLOWER_DATASET[matchedKey];
-
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      setResult({
-        isFlower: true,
-        class: matchedKey,
-        confidence: confidence,
-        confidenceScores: botanicalMatch.confidenceScores,
-        scientificName: localDetail.scientificName,
-        botanicalFamily: localDetail.botanicalFamily,
-        nativeRegion: localDetail.nativeRegion,
-        description: localDetail.description,
-        funFact: localDetail.funFact,
-        careInstructions: localDetail.careInstructions,
-        source: "Trained ML Model (On-Device Dataset)",
-        pipelineStage: "ml_trained",
-        shiftReason: "Identified directly by trained botanical neural weights across the 106-species catalog. Zero cloud latency."
-      });
-      setIsAnalyzing(false);
-      setAnalysisPhase("idle");
-      return;
-    }
-
-    // Stage 2: If no proper data trained or input image was unclear -> Shift from ML to AI
-    const shiftExplanation = !matchedKey
-      ? "Species is not present in local 106-species catalog"
-      : `Input image was unclear or complex macro floral angle with low ML confidence (${confidence}%)`;
-
-    setShiftNotice(shiftExplanation);
-    setAnalysisPhase("shifting_to_ai");
-    setAnalysisLog(`Trained dataset inconclusive (${shiftExplanation}). Shifting from ML to Cloud AI Vision...`);
-
-    // Visible shift transition interval
-    await new Promise((resolve) => setTimeout(resolve, 800));
-
+    setLocalUnindexedNotice(null);
     setAnalysisPhase("ai_searching");
-    setAnalysisLog("Stage 2: Engaging Gemini AI Vision with API Key & global internet botanical knowledge base (400,000+ species)...");
+    setAnalysisLog("Executing Cloud AI Vision with global internet taxonomy (400,000+ species)...");
 
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (userApiKey && userApiKey.trim()) {
+        headers["x-gemini-api-key"] = userApiKey.trim();
+      }
+
       const payload: any = {
         image: selectedSampleId ? undefined : imagePreview,
         sampleId: selectedSampleId || undefined,
-        shiftReason: shiftExplanation
+        customApiKey: userApiKey ? userApiKey.trim() : undefined,
+        shiftReason: reason || "User explicitly selected Cloud AI Multimodal Model"
       };
 
       const response = await fetch("/api/detect", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(payload),
       });
 
-      // Ultra-safe JSON parsing that prevents "Unexpected token 'A', 'A server e'... is not valid JSON"
       let data: any = null;
       const contentType = response.headers.get("content-type") || "";
 
@@ -331,7 +307,6 @@ export default function App() {
       }
 
       if (!data) {
-        // Safely extract text without crashing
         const rawText = await response.text().catch(() => "");
         console.warn("Non-JSON server response:", rawText);
         data = {
@@ -341,23 +316,160 @@ export default function App() {
       }
 
       if (data.isFlower === false) {
-        setError(data.error || "The image uploaded does not appear to contain a recognized flower or plant species. Please ensure your photo contains clear botanical petals under good lighting.");
+        setError(data.error || "The image uploaded does not appear to contain a recognized flower or plant species.");
       } else {
+        // AUTOMATIC CONTINUAL LEARNING:
+        // Automatically save the detected species to local memory so future local scans immediately recognize it!
+        let visualFp = undefined;
+        if (previewImgRef.current) {
+          try {
+            visualFp = await extractImageFingerprint(previewImgRef.current);
+          } catch (fpErr) {
+            console.warn("Fingerprint extraction for learning:", fpErr);
+          }
+        }
+
+        saveLearnedSpecies({
+          commonName: data.class,
+          scientificName: data.scientificName,
+          botanicalFamily: data.botanicalFamily,
+          nativeRegion: data.nativeRegion,
+          description: data.description,
+          funFact: data.funFact,
+          careInstructions: data.careInstructions,
+          sampleThumbnail: imagePreview || undefined,
+          visualFingerprint: visualFp
+        });
+
+        refreshLearnedSpecies();
+        setLatestLearnedNotice(data.class);
+
+        const keyNotice = userApiKey
+          ? "Cloud AI Vision (Personal Gemini Key)"
+          : "Cloud AI Vision & Internet Knowledge (Gemini)";
+
         setResult({
           ...data,
-          source: "Cloud AI Vision & Internet Knowledge (Gemini)",
+          source: keyNotice,
           pipelineStage: "ai_cloud",
-          shiftReason: data.shiftReason || shiftExplanation
+          isNewlyLearned: true,
+          shiftReason: data.shiftReason || reason || "Identified via Gemini Cloud AI Vision and auto-learned into Local ML memory."
         });
       }
     } catch (err: any) {
       console.error("Cloud AI Analysis Error:", err);
-      // Display polite, helpful botanical guidance instead of raw technical syntax error
-      setError("Identification could not be completed at this time. Please check your internet connection or choose another specimen from the Botanical Garden.");
+      setError("Identification could not be completed at this time. Please check your network connection or provide your Gemini API key in the top 'API Key Input' dropdown.");
     } finally {
       setIsAnalyzing(false);
       setAnalysisPhase("idle");
     }
+  };
+
+  // Main Detection Dispatcher based on Custom User Selection
+  const runDetection = async () => {
+    if (!imagePreview) {
+      setError("Please upload or choose a flower image first.");
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setError(null);
+    setResult(null);
+    setShiftNotice(null);
+    setLocalUnindexedNotice(null);
+    setLatestLearnedNotice(null);
+
+    // MODE 1: CLOUD AI MULTIMODAL MODEL (User Selected Cloud AI Directly)
+    if (detectionMode === "ai") {
+      await runCloudAIDetection("User explicitly selected Cloud AI Multimodal Model");
+      return;
+    }
+
+    // MODE 2 & 3: LOCAL ML MODEL or AUTO DUAL ENGINE
+    setAnalysisPhase("ml_scanning");
+    setAnalysisLog("Scanning on-device neural features across 106 built-in species + learned memory cache...");
+
+    let mobileNetPreds: Array<{ className: string; probability: number }> = [];
+    if (mlModel && previewImgRef.current) {
+      try {
+        const mobilenetTask = mlModel.classify(previewImgRef.current);
+        const timeoutTask = new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 1500));
+        mobileNetPreds = await Promise.race([mobilenetTask, timeoutTask]);
+      } catch (err) {
+        console.warn("MobileNet tensor extraction note:", err);
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    // Execute high-accuracy on-device botanical vision classification (including learned memory)
+    let botanicalMatch: any = null;
+    if (previewImgRef.current) {
+      try {
+        botanicalMatch = await classifyBotanicalSpecimen(previewImgRef.current, mobileNetPreds);
+      } catch (classifierErr) {
+        console.warn("On-device botanical classifier error:", classifierErr);
+      }
+    }
+
+    const matchedKey = botanicalMatch?.matchedKey;
+    const confidence = botanicalMatch?.confidence || 0;
+    const isLearned = botanicalMatch?.isLearnedFromAI;
+    const combinedCatalog = getCombinedBotanicalDataset();
+
+    // CASE A: Found in Local ML Catalog or Learned Memory (>= 35% confidence)
+    if (matchedKey && combinedCatalog[matchedKey] && confidence >= 35) {
+      setAnalysisPhase("ml_matched");
+      setAnalysisLog(`Specimen successfully identified in Local ML: ${matchedKey.toUpperCase()} (${confidence}% confidence).`);
+      const localDetail = combinedCatalog[matchedKey];
+
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      setResult({
+        isFlower: true,
+        class: matchedKey,
+        confidence: confidence,
+        confidenceScores: botanicalMatch.confidenceScores,
+        scientificName: localDetail.scientificName,
+        botanicalFamily: localDetail.botanicalFamily,
+        nativeRegion: localDetail.nativeRegion,
+        description: localDetail.description,
+        funFact: localDetail.funFact,
+        careInstructions: localDetail.careInstructions,
+        source: isLearned
+          ? "Local ML Model (Learned Memory Cache)"
+          : "Trained ML Model (On-Device Dataset)",
+        pipelineStage: isLearned ? "ml_learned" : "ml_trained",
+        shiftReason: isLearned
+          ? "Identified instantly on-device using previously learned Cloud AI profile saved in local memory!"
+          : "Identified directly by on-device convolutional weights across 106 built-in species. Zero cloud latency."
+      });
+      setIsAnalyzing(false);
+      setAnalysisPhase("idle");
+      return;
+    }
+
+    // CASE B: In Pure Local ML Mode, Specimen is Unindexed / Not Found
+    if (detectionMode === "local") {
+      setIsAnalyzing(false);
+      setAnalysisPhase("ml_not_found");
+      setLocalUnindexedNotice(
+        "Specimen is not recognized in your Local ML Knowledge Base (confidence < 35% or unindexed species)."
+      );
+      return;
+    }
+
+    // CASE C: In Auto Dual Engine Mode, Automatically Shift to Cloud AI
+    const shiftExplanation = !matchedKey
+      ? "Species is not present in local botanical dataset"
+      : `Input image was unclear or complex floral angle with low ML confidence (${confidence}%)`;
+
+    setShiftNotice(shiftExplanation);
+    setAnalysisPhase("shifting_to_ai");
+    setAnalysisLog(`Local dataset inconclusive (${shiftExplanation}). Shifting to Cloud AI Vision...`);
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await runCloudAIDetection(shiftExplanation);
   };
 
   // Clear states
@@ -367,6 +479,8 @@ export default function App() {
     setImagePreview(null);
     setResult(null);
     setError(null);
+    setLocalUnindexedNotice(null);
+    setLatestLearnedNotice(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -374,54 +488,63 @@ export default function App() {
 
   return (
     <div id="app-container" className="min-h-screen bg-stone-50/50 text-stone-800 font-sans selection:bg-emerald-100 selection:text-emerald-950 pb-16">
-      {/* Top Banner Status */}
-      {!apiOnline && (
+      {/* Top Banner Status when no Key is available anywhere */}
+      {!apiOnline && !userApiKey && (
         <div id="api-warning-banner" className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-center text-xs text-amber-800 flex items-center justify-center gap-2 font-medium">
           <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
-          <span>Gemini API Key is currently missing. Please go to <strong>Settings &gt; Secrets</strong> to add your <strong>GEMINI_API_KEY</strong>.</span>
+          <span>
+            Gemini API Key is not set on the server. Please enter your individual Gemini API key using the <strong>API Key Input</strong> dropdown at the top.
+          </span>
         </div>
       )}
 
       {/* Main Container */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-        {/* Elegant Header */}
-        <header id="app-header" className="text-center max-w-2xl mx-auto mb-10 mt-2">
-          <div className="flex justify-center flex-wrap gap-2.5 mb-3.5">
+        {/* Header */}
+        <header id="app-header" className="text-center max-w-3xl mx-auto mb-8 mt-2">
+          {/* Top-down Action Row including API Key Dropdown */}
+          <div className="flex justify-center flex-wrap items-center gap-2 mb-3.5">
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5 }}
-              className="inline-flex items-center gap-2 bg-emerald-50/80 text-emerald-800 border border-emerald-200/60 px-3.5 py-1 rounded-full text-xs font-semibold"
+              className="inline-flex items-center gap-2 bg-emerald-50/80 text-emerald-800 border border-emerald-200/60 px-3.5 py-1.5 rounded-full text-xs font-semibold"
             >
               <Leaf className="w-3.5 h-3.5" />
-              <span>AI Multimodal Vision Engine</span>
+              <span>Multi-Model Botanical Vision</span>
             </motion.div>
 
-            <motion.div
+            {/* Individual User API Key Top-Down Dropdown */}
+            <ApiKeyDropdown
+              userApiKey={userApiKey}
+              onApiKeyChange={handleApiKeyChange}
+              defaultApiReady={apiOnline}
+            />
+
+            <motion.button
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.1 }}
-              className={`inline-flex items-center gap-2 border px-3.5 py-1 rounded-full text-xs font-semibold ${
-                isModelLoading
-                  ? "bg-stone-50 text-stone-500 border-stone-200"
-                  : "bg-teal-50 text-teal-800 border-teal-200"
-              }`}
+              onClick={() => setIsLearnedModalOpen(true)}
+              className="inline-flex items-center gap-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200/80 px-3 py-1.5 rounded-full text-xs font-semibold transition-all shadow-xs cursor-pointer"
             >
-              <Sprout className={`w-3.5 h-3.5 text-teal-700 ${isModelLoading ? "animate-spin" : ""}`} />
-              <span>{isModelLoading ? "Initializing Local ML..." : "Local TensorFlow.js Active"}</span>
-            </motion.div>
+              <Brain className="w-3.5 h-3.5 text-teal-700" />
+              <span>Learned Memory: {learnedSpeciesList.length}</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            </motion.button>
 
             <motion.button
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.15 }}
               onClick={() => setIsCatalogOpen(true)}
-              className="inline-flex items-center gap-2 bg-emerald-800 hover:bg-emerald-900 text-white px-3.5 py-1 rounded-full text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 bg-emerald-800 hover:bg-emerald-900 text-white px-3.5 py-1.5 rounded-full text-xs font-semibold shadow-xs transition-colors cursor-pointer"
             >
               <BookOpen className="w-3.5 h-3.5" />
-              <span>106-Species Botanical Catalog</span>
+              <span>106-Species Catalog</span>
             </motion.button>
           </div>
+
           <motion.h1
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -430,15 +553,111 @@ export default function App() {
           >
             🌸 Iris Bloom AI <span className="text-emerald-700 font-normal italic font-serif">Flower Vision</span>
           </motion.h1>
+
           <motion.p
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.8, delay: 0.2 }}
-            className="mt-2.5 text-sm sm:text-base text-stone-600 leading-relaxed font-light"
+            className="mt-2 text-sm sm:text-base text-stone-600 leading-relaxed font-light"
           >
-            Upload a photo of any flower. Our botanical assistant instantly identifies 400,000+ species globally using high-speed local machine learning and advanced Gemini AI vision.
+            Choose between <strong>Local ML Model</strong> (instant on-device neural detection) and <strong>Cloud AI Multimodal Model</strong> (powered by your individual Gemini API key). Whenever Cloud AI identifies a new specimen, it is instantly learned into your Local ML model for future zero-cloud recognition.
           </motion.p>
         </header>
+
+        {/* Custom Model Selector Segmented Control */}
+        <div className="max-w-2xl mx-auto mb-8">
+          <div className="bg-white p-1.5 rounded-2xl border border-stone-200/90 shadow-sm grid grid-cols-3 gap-1.5">
+            {/* Option 1: Local ML Model */}
+            <button
+              id="mode-btn-local"
+              onClick={() => {
+                setDetectionMode("local");
+                setError(null);
+                setLocalUnindexedNotice(null);
+              }}
+              className={`p-3 rounded-xl text-left transition-all flex flex-col justify-between cursor-pointer ${
+                detectionMode === "local"
+                  ? "bg-emerald-800 text-white shadow-sm ring-1 ring-emerald-900"
+                  : "bg-transparent hover:bg-stone-50 text-stone-700"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-bold text-xs sm:text-sm">
+                  <Cpu className="w-4 h-4 shrink-0" />
+                  <span>Local ML Model</span>
+                </div>
+                {detectionMode === "local" && (
+                  <span className="w-2 h-2 rounded-full bg-emerald-300"></span>
+                )}
+              </div>
+              <p className={`text-[10px] sm:text-[11px] mt-1 leading-tight ${
+                detectionMode === "local" ? "text-emerald-100" : "text-stone-500"
+              }`}>
+                On-device dataset (106 base + {learnedSpeciesList.length} learned)
+              </p>
+            </button>
+
+            {/* Option 2: Cloud AI Multimodal Model */}
+            <button
+              id="mode-btn-ai"
+              onClick={() => {
+                setDetectionMode("ai");
+                setError(null);
+                setLocalUnindexedNotice(null);
+              }}
+              className={`p-3 rounded-xl text-left transition-all flex flex-col justify-between cursor-pointer ${
+                detectionMode === "ai"
+                  ? "bg-purple-800 text-white shadow-sm ring-1 ring-purple-900"
+                  : "bg-transparent hover:bg-stone-50 text-stone-700"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-bold text-xs sm:text-sm">
+                  <Globe className="w-4 h-4 shrink-0" />
+                  <span>Cloud AI Vision</span>
+                </div>
+                {detectionMode === "ai" && (
+                  <span className="w-2 h-2 rounded-full bg-purple-300"></span>
+                )}
+              </div>
+              <p className={`text-[10px] sm:text-[11px] mt-1 leading-tight ${
+                detectionMode === "ai" ? "text-purple-100" : "text-stone-500"
+              }`}>
+                Gemini AI (uses your API key & auto-learns)
+              </p>
+            </button>
+
+            {/* Option 3: Smart Auto Dual Engine */}
+            <button
+              id="mode-btn-auto"
+              onClick={() => {
+                setDetectionMode("auto");
+                setError(null);
+                setLocalUnindexedNotice(null);
+              }}
+              className={`p-3 rounded-xl text-left transition-all flex flex-col justify-between cursor-pointer ${
+                detectionMode === "auto"
+                  ? "bg-teal-800 text-white shadow-sm ring-1 ring-teal-900"
+                  : "bg-transparent hover:bg-stone-50 text-stone-700"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-bold text-xs sm:text-sm">
+                  <Zap className="w-4 h-4 shrink-0" />
+                  <span>Auto Dual-Engine</span>
+                </div>
+                {detectionMode === "auto" && (
+                  <span className="w-2 h-2 rounded-full bg-teal-300"></span>
+                )}
+              </div>
+              <p className={`text-[10px] sm:text-[11px] mt-1 leading-tight ${
+                detectionMode === "auto" ? "text-teal-100" : "text-stone-500"
+              }`}>
+                Local ML first, shifts to Cloud AI if unknown
+              </p>
+            </button>
+          </div>
+        </div>
 
         {/* Core Layout Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
@@ -496,7 +715,7 @@ export default function App() {
                           e.stopPropagation();
                           resetApp();
                         }}
-                        className="absolute top-2.5 right-2.5 bg-stone-900/80 text-white hover:bg-stone-950 p-1.5 rounded-full shadow-md transition-colors"
+                        className="absolute top-2.5 right-2.5 bg-stone-900/80 text-white hover:bg-stone-950 p-1.5 rounded-full shadow-md transition-colors cursor-pointer"
                         title="Remove image"
                       >
                         <X className="w-4 h-4" />
@@ -535,18 +754,33 @@ export default function App() {
                   className="mt-5 flex gap-3"
                 >
                   <button
+                    id="btn-run-detection"
                     onClick={runDetection}
                     disabled={isAnalyzing}
-                    className="flex-1 bg-emerald-800 text-white font-semibold py-3 px-4 rounded-xl shadow-md shadow-emerald-900/10 hover:bg-emerald-700 active:scale-[0.98] disabled:opacity-50 transition-all flex items-center justify-center gap-2 text-sm"
+                    className={`flex-1 font-semibold py-3 px-4 rounded-xl shadow-md active:scale-[0.98] disabled:opacity-50 transition-all flex items-center justify-center gap-2 text-sm text-white cursor-pointer ${
+                      detectionMode === "local"
+                        ? "bg-emerald-800 hover:bg-emerald-700 shadow-emerald-900/15"
+                        : detectionMode === "ai"
+                        ? "bg-purple-800 hover:bg-purple-700 shadow-purple-900/15"
+                        : "bg-teal-800 hover:bg-teal-700 shadow-teal-900/15"
+                    }`}
                   >
                     <Sparkles className="w-4 h-4 animate-pulse" />
-                    <span>{isAnalyzing ? "Executing Analysis..." : "Identify Flower Specimen"}</span>
+                    <span>
+                      {isAnalyzing
+                        ? "Executing Analysis..."
+                        : detectionMode === "local"
+                        ? "Detect with Local ML Model"
+                        : detectionMode === "ai"
+                        ? "Identify with Cloud AI Model"
+                        : "Analyze (Auto Dual-Engine)"}
+                    </span>
                   </button>
 
                   <button
                     onClick={resetApp}
                     disabled={isAnalyzing}
-                    className="bg-stone-100 hover:bg-stone-200 text-stone-700 p-3 rounded-xl border border-stone-200/80 transition-colors"
+                    className="bg-stone-100 hover:bg-stone-200 text-stone-700 p-3 rounded-xl border border-stone-200/80 transition-colors cursor-pointer"
                     title="Reset App"
                   >
                     <RotateCcw className="w-4 h-4" />
@@ -560,12 +794,12 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-stone-600 flex items-center gap-1.5">
                   <Layers className="w-3.5 h-3.5 text-emerald-700" />
-                  <span>Test Both Workflow Paths</span>
+                  <span>Test Specimens</span>
                 </h3>
                 <span className="text-[10px] text-stone-400 font-medium">Click to Load</span>
               </div>
               <p className="text-xs text-stone-500 leading-relaxed font-light">
-                Select a sample below to test either on-device <strong>Trained ML Model</strong> matching or the automatic <strong>Shift to Cloud AI</strong>.
+                Select a sample below to test <strong>Local ML Model</strong> instant detection or <strong>Cloud AI Vision</strong> learning.
               </p>
 
               <div className="grid grid-cols-2 gap-2 pt-1">
@@ -578,7 +812,7 @@ export default function App() {
                       key={sample.id}
                       onClick={() => handleSelectSample(sample)}
                       disabled={isAnalyzing}
-                      className={`p-2.5 rounded-xl border text-left transition-all relative group flex flex-col justify-between min-h-[78px] ${
+                      className={`p-2.5 rounded-xl border text-left transition-all relative group flex flex-col justify-between min-h-[78px] cursor-pointer ${
                         isSelected
                           ? "border-emerald-600 bg-emerald-50/40 ring-1 ring-emerald-600/30"
                           : "border-stone-200 hover:border-stone-300 hover:bg-stone-50/70"
@@ -601,12 +835,12 @@ export default function App() {
                           {isMl ? (
                             <>
                               <Cpu className="w-2.5 h-2.5" />
-                              <span>Trained ML</span>
+                              <span>In Local ML</span>
                             </>
                           ) : (
                             <>
                               <Zap className="w-2.5 h-2.5" />
-                              <span>Shifts to AI</span>
+                              <span>Learns from AI</span>
                             </>
                           )}
                         </span>
@@ -617,31 +851,34 @@ export default function App() {
               </div>
             </section>
 
-            {/* Workflow Architecture Card */}
-            <section className="bg-stone-100/60 border border-stone-200/80 rounded-2xl p-4.5 text-xs text-stone-600 space-y-2">
+            {/* Continual Learning Status Info Card */}
+            <section className="bg-gradient-to-br from-teal-900 to-emerald-950 text-white rounded-2xl p-5 shadow-sm space-y-3">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 font-bold text-stone-900">
-                  <ShieldCheck className="w-4 h-4 text-emerald-700" />
-                  <span>Dual-Engine Reliability</span>
+                <div className="flex items-center gap-2 font-bold text-xs">
+                  <Brain className="w-4 h-4 text-emerald-400" />
+                  <span>Continual Learning Engine</span>
                 </div>
                 <button
-                  onClick={() => setIsCatalogOpen(true)}
-                  className="text-[10px] text-emerald-700 hover:text-emerald-800 font-bold underline cursor-pointer"
+                  onClick={() => setIsLearnedModalOpen(true)}
+                  className="text-[10px] text-emerald-300 hover:text-emerald-200 font-bold underline cursor-pointer"
                 >
-                  View 106 Classes
+                  View ({learnedSpeciesList.length})
                 </button>
               </div>
-              <p className="leading-relaxed font-light text-[11px]">
-                1. <strong>Trained ML Model</strong> scans on-device across 106 verified botanical species.<br />
-                2. If confidence &lt; 40% or specimen is unindexed, the system <strong>automatically shifts to Cloud AI</strong> using the API key to query global internet taxonomy (400,000+ species).
+              <p className="text-[11px] text-emerald-100/80 leading-relaxed font-light">
+                When you run <strong>Cloud AI Multimodal Model</strong>, new flower classifications are automatically indexed in your local browser memory. Subsequent scans of the same flower in <strong>Local ML Mode</strong> will recognize it directly without using cloud AI!
               </p>
+              <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-emerald-300 font-semibold">
+                <span>Total On-Device Index:</span>
+                <span>{106 + learnedSpeciesList.length} Species</span>
+              </div>
             </section>
           </div>
 
           {/* Right Column: Analysis & Insights */}
           <div className="lg:col-span-8">
             <AnimatePresence mode="wait">
-              {/* 1. Loading State with Live Multi-Stage Progression */}
+              {/* 1. Loading State with Multi-Stage Progression */}
               {isAnalyzing && (
                 <motion.div
                   key="analyzing"
@@ -650,10 +887,10 @@ export default function App() {
                   exit={{ opacity: 0, scale: 0.98 }}
                   className="bg-white border border-stone-200/80 rounded-2xl p-8 shadow-sm flex flex-col items-center justify-center text-center space-y-6 min-h-[460px]"
                 >
-                  {/* Two-Tier Engine Visual Progress Tracker */}
+                  {/* Visual Tracker */}
                   <div className="w-full max-w-md bg-stone-50 border border-stone-200/80 rounded-2xl p-5 space-y-4">
                     <span className="text-[11px] uppercase tracking-wider font-extrabold text-stone-500 block text-center">
-                      Execution Flow: Edge ML ➔ Cloud AI Shift
+                      Execution Mode: {detectionMode === "local" ? "Local ML Only" : detectionMode === "ai" ? "Cloud AI Multimodal Model" : "Auto Dual-Engine"}
                     </span>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 relative">
@@ -669,14 +906,14 @@ export default function App() {
                           <Cpu className={`w-4 h-4 ${
                             analysisPhase === "ml_scanning" ? "text-emerald-700 animate-pulse" : "text-stone-600"
                           }`} />
-                          <span className="text-xs font-bold text-stone-900">1. Trained ML Model</span>
+                          <span className="text-xs font-bold text-stone-900">1. Local ML Model</span>
                         </div>
                         <p className="text-[10px] text-stone-500 leading-tight">
                           {analysisPhase === "ml_scanning"
-                            ? "Analyzing trained dataset weights..."
+                            ? "Analyzing local weights & learned memory..."
                             : analysisPhase === "ml_matched"
-                            ? "✓ Specimen identified in dataset!"
-                            : "Match inconclusive or unindexed"}
+                            ? "✓ Specimen identified in Local ML!"
+                            : "On-device search complete"}
                         </p>
                       </div>
 
@@ -696,10 +933,10 @@ export default function App() {
                         </div>
                         <p className="text-[10px] text-stone-500 leading-tight">
                           {analysisPhase === "shifting_to_ai"
-                            ? "⚡ Shifting from ML to Cloud AI..."
+                            ? "⚡ Shifting to Cloud AI..."
                             : analysisPhase === "ai_searching"
-                            ? "Querying internet taxonomy (400k+ species)..."
-                            : "Standby (activates if ML inconclusive)"}
+                            ? "Querying internet taxonomy with your API Key..."
+                            : "Standby"}
                         </p>
                       </div>
                     </div>
@@ -720,30 +957,73 @@ export default function App() {
                   <div className="space-y-2 max-w-md">
                     <h3 className="text-base font-serif font-bold text-stone-900">
                       {analysisPhase === "ml_scanning"
-                        ? "Searching Trained Flower Dataset..."
+                        ? "Searching Local Botanical Dataset & Memory..."
                         : analysisPhase === "shifting_to_ai"
                         ? "Transitioning to Gemini AI Vision..."
-                        : "Querying Global Internet Botanical Database..."}
+                        : "Querying Global Botanical Database with Gemini..."}
                     </h3>
                     <p className="text-xs text-stone-600 font-medium">
                       {analysisLog}
                     </p>
                   </div>
+                </motion.div>
+              )}
 
-                  {/* Fact Carousel or loading helpers */}
-                  <div className="bg-stone-50 rounded-xl p-4 border border-stone-200/60 text-stone-600 text-xs leading-relaxed max-w-md">
-                    <div className="font-semibold text-stone-900 mb-1 flex items-center gap-1.5 justify-center">
-                      <Info className="w-3.5 h-3.5 text-emerald-700" />
-                      <span>Botanical Intelligence</span>
-                    </div>
-                    <span>
-                      Our dual pipeline attempts fast edge recognition first. If the plant is rare or the photo is unclear, it shifts to cloud vision with internet-level botanical taxonomy.
+              {/* 2. LOCAL ML UNINDEXED NOTICE (When in Local ML Mode and flower is not found) */}
+              {localUnindexedNotice && !isAnalyzing && !result && !error && (
+                <motion.div
+                  key="local-unindexed"
+                  initial={{ opacity: 0, scale: 0.98 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.98 }}
+                  className="bg-white border border-stone-200/90 rounded-2xl p-8 shadow-sm flex flex-col items-center text-center space-y-6 min-h-[420px] justify-center"
+                >
+                  <div className="w-14 h-14 bg-amber-50 border border-amber-200 text-amber-700 rounded-2xl flex items-center justify-center shadow-xs">
+                    <Brain className="w-7 h-7" />
+                  </div>
+                  
+                  <div className="max-w-md space-y-2">
+                    <span className="text-xs uppercase font-extrabold tracking-wider text-amber-700 bg-amber-100/80 px-2.5 py-1 rounded-md">
+                      Not Found in Local ML Model
                     </span>
+                    <h3 className="text-xl font-serif font-bold text-stone-900 pt-1">
+                      Specimen Not Yet Learned
+                    </h3>
+                    <p className="text-sm text-stone-600 leading-relaxed font-light">
+                      This flower is not present in your local 106 built-in species catalog and has not been learned into your device's memory yet.
+                    </p>
+                  </div>
+
+                  <div className="bg-stone-50 border border-stone-200/80 rounded-xl p-4 max-w-md text-left text-xs text-stone-600 space-y-2">
+                    <div className="font-semibold text-stone-800 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                      <span>1-Click Cloud AI Identification & Local ML Learning</span>
+                    </div>
+                    <p className="text-stone-500 leading-relaxed">
+                      Click below to let Cloud AI Multimodal Model identify this flower with global taxonomy (400,000+ species). The result will be <strong>automatically learned and stored</strong> on your device so next time you can detect it directly with Local ML!
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-3 w-full max-w-md">
+                    <button
+                      id="btn-escalate-to-ai"
+                      onClick={() => runCloudAIDetection("Escalated from Local ML Model scan")}
+                      className="flex-1 bg-purple-800 hover:bg-purple-700 text-white font-semibold py-3 px-4 rounded-xl shadow-md shadow-purple-900/15 transition-all flex items-center justify-center gap-2 text-sm cursor-pointer"
+                    >
+                      <Globe className="w-4 h-4" />
+                      <span>Analyze with Cloud AI & Learn Species</span>
+                    </button>
+                    <button
+                      onClick={resetApp}
+                      className="bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-semibold px-4 py-3 rounded-xl transition-colors cursor-pointer"
+                    >
+                      Try Another Photo
+                    </button>
                   </div>
                 </motion.div>
               )}
 
-              {/* 2. Error State */}
+              {/* 3. Error State */}
               {error && !isAnalyzing && (
                 <motion.div
                   key="error"
@@ -759,16 +1039,18 @@ export default function App() {
                     <h3 className="text-base font-bold text-red-950">Identification Halted</h3>
                     <p className="text-sm text-red-800/90 leading-relaxed font-light">{error}</p>
                   </div>
-                  <button
-                    onClick={resetApp}
-                    className="bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
-                  >
-                    Clear and Try Another Photo
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={resetApp}
+                      className="bg-white hover:bg-stone-50 border border-stone-200 text-stone-700 text-xs font-semibold px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Clear and Try Another Photo
+                    </button>
+                  </div>
                 </motion.div>
               )}
 
-              {/* 3. Successful Detection Result */}
+              {/* 4. Successful Detection Result */}
               {result && !isAnalyzing && !error && (
                 <motion.div
                   key="result"
@@ -787,6 +1069,37 @@ export default function App() {
                   }}
                   className="space-y-6"
                 >
+                  {/* Notification banner when newly learned from Cloud AI */}
+                  {result.isNewlyLearned && (
+                    <motion.div
+                      variants={{
+                        hidden: { opacity: 0, y: -10 },
+                        visible: { opacity: 1, y: 0 }
+                      }}
+                      className="bg-emerald-800 text-white rounded-2xl p-4.5 shadow-md flex items-center justify-between gap-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-xl bg-emerald-700/80 border border-emerald-600/60 shrink-0">
+                          <Sparkles className="w-5 h-5 text-emerald-200" />
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                            ✨ Learned to Local ML Model!
+                          </h4>
+                          <p className="text-xs text-emerald-100/90 leading-tight mt-0.5">
+                            "{result.class}" is now stored in your on-device knowledge base. Next time you scan this flower in <strong>Local ML Model</strong> mode, it will identify it immediately offline!
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setIsLearnedModalOpen(true)}
+                        className="shrink-0 bg-white text-emerald-900 hover:bg-emerald-50 text-xs font-bold px-3 py-1.5 rounded-xl transition-colors cursor-pointer"
+                      >
+                        View Memory
+                      </button>
+                    </motion.div>
+                  )}
+
                   {/* Card 1: Engine Provenance Banner */}
                   <motion.div
                     variants={{
@@ -799,7 +1112,9 @@ export default function App() {
                       }
                     }}
                     className={`border rounded-2xl p-4.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm ${
-                      result.pipelineStage === "ml_trained"
+                      result.pipelineStage === "ml_learned"
+                        ? "bg-teal-50/90 border-teal-200 text-teal-950"
+                        : result.pipelineStage === "ml_trained"
                         ? "bg-emerald-50/90 border-emerald-200 text-emerald-950"
                         : "bg-purple-50/90 border-purple-200 text-purple-950"
                     }`}
@@ -810,12 +1125,16 @@ export default function App() {
                         animate={{ scale: 1, rotate: 0 }}
                         transition={{ type: "spring", stiffness: 300, damping: 20, delay: 0.1 }}
                         className={`p-2.5 rounded-xl flex-shrink-0 ${
-                          result.pipelineStage === "ml_trained"
+                          result.pipelineStage === "ml_learned"
+                            ? "bg-teal-100 text-teal-800 border border-teal-200"
+                            : result.pipelineStage === "ml_trained"
                             ? "bg-emerald-100 text-emerald-800 border border-emerald-200"
                             : "bg-purple-100 text-purple-800 border border-purple-200"
                         }`}
                       >
-                        {result.pipelineStage === "ml_trained" ? (
+                        {result.pipelineStage === "ml_learned" ? (
+                          <Brain className="w-5 h-5" />
+                        ) : result.pipelineStage === "ml_trained" ? (
                           <Cpu className="w-5 h-5" />
                         ) : (
                           <Zap className="w-5 h-5" />
@@ -824,24 +1143,28 @@ export default function App() {
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-extrabold uppercase tracking-wide">
-                            {result.pipelineStage === "ml_trained"
-                              ? "Identified by Trained ML Model (On-Device)"
-                              : "Shifted from ML to Cloud AI Vision"}
+                            {result.pipelineStage === "ml_learned"
+                              ? "Identified from Local Learned Memory (Zero Cloud Delay)"
+                              : result.pipelineStage === "ml_trained"
+                              ? "Identified by Local ML Model (106 Catalog)"
+                              : "Identified via Cloud AI Multimodal Model (Gemini Vision)"}
                           </span>
                           <span className={`text-[10px] px-2 py-0.5 rounded-md font-bold ${
-                            result.pipelineStage === "ml_trained"
+                            result.pipelineStage === "ml_learned"
+                              ? "bg-teal-200/80 text-teal-900"
+                              : result.pipelineStage === "ml_trained"
                               ? "bg-emerald-200/80 text-emerald-900"
                               : "bg-purple-200/80 text-purple-900"
                           }`}>
-                            {result.pipelineStage === "ml_trained" ? "Local Dataset" : "API Key Activated"}
+                            {result.pipelineStage === "ml_learned"
+                              ? "Learned Memory"
+                              : result.pipelineStage === "ml_trained"
+                              ? "Local ML"
+                              : "Cloud AI"}
                           </span>
                         </div>
                         <p className="text-xs text-stone-600 mt-1 leading-relaxed">
-                          {result.shiftReason || (
-                            result.pipelineStage === "ml_trained"
-                              ? "Specimen recognized via deep convolutional weights trained on botanical dataset."
-                              : "Shifted to Gemini AI Vision with global internet botanical taxonomy (400,000+ species)."
-                          )}
+                          {result.shiftReason}
                         </p>
                       </div>
                     </div>
@@ -924,7 +1247,7 @@ export default function App() {
                         </p>
                       </div>
 
-                      {/* Probabilities - matching original Streamlit functionality */}
+                      {/* Probabilities */}
                       <div className="space-y-3.5">
                         <div className="flex items-center justify-between">
                           <h4 className="text-xs uppercase font-extrabold tracking-wider text-stone-400 flex items-center gap-1.5">
@@ -949,52 +1272,37 @@ export default function App() {
                                   delay: 0.2 + index * 0.08,
                                   ease: [0.22, 1, 0.36, 1]
                                 }}
-                                className="space-y-1.5"
+                                className="space-y-1"
                               >
-                                <div className="flex justify-between text-xs font-semibold text-stone-800">
-                                  <span className="capitalize flex items-center gap-1.5">
-                                    <span className="text-sm select-none">{palette.emoji}</span>
-                                    <span className={isPredictedClass ? "text-stone-900 font-bold" : "text-stone-600 font-normal"}>
-                                      {score.class}
-                                    </span>
+                                <div className="flex items-center justify-between text-xs font-semibold">
+                                  <span className={`capitalize flex items-center gap-1.5 ${
+                                    isPredictedClass ? "text-stone-900 font-bold" : "text-stone-600"
+                                  }`}>
+                                    <span>{palette.emoji}</span>
+                                    <span>{score.class}</span>
                                     {isPredictedClass && (
-                                      <span className="text-[9px] font-extrabold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 uppercase tracking-wider">
-                                        Top Match
+                                      <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-bold">
+                                        Top
                                       </span>
                                     )}
                                   </span>
-                                  <motion.span
-                                    initial={{ opacity: 0 }}
-                                    animate={{ opacity: 1 }}
-                                    transition={{ duration: 0.3, delay: 0.3 + index * 0.08 }}
-                                    className={isPredictedClass ? "text-emerald-800 font-bold" : "text-stone-500 font-normal"}
-                                  >
+                                  <span className={`font-mono ${isPredictedClass ? "text-emerald-800 font-bold" : "text-stone-500"}`}>
                                     {score.confidence.toFixed(1)}%
-                                  </motion.span>
+                                  </span>
                                 </div>
-                                <div className="h-2.5 bg-stone-100 rounded-full overflow-hidden p-0.5 shadow-inner">
+                                <div className="w-full bg-stone-100 rounded-full h-2 overflow-hidden">
                                   <motion.div
                                     initial={{ width: 0 }}
-                                    animate={{ width: `${Math.max(score.confidence, 1.5)}%` }}
+                                    animate={{ width: `${Math.max(2, score.confidence)}%` }}
                                     transition={{
-                                      duration: 0.85,
+                                      duration: 0.8,
                                       delay: 0.25 + index * 0.08,
-                                      ease: [0.16, 1, 0.3, 1]
+                                      ease: [0.22, 1, 0.36, 1]
                                     }}
-                                    className={`h-full rounded-full relative ${
-                                      isPredictedClass
-                                        ? "shadow-sm shadow-emerald-600/30"
-                                        : ""
+                                    className={`h-full rounded-full ${
+                                      isPredictedClass ? "bg-emerald-600" : "bg-stone-300"
                                     }`}
-                                    style={{
-                                      backgroundColor: isPredictedClass ? activePalette.accent : "#cbd5e1"
-                                    }}
-                                  >
-                                    {/* subtle glossy sheen highlight for the top match */}
-                                    {isPredictedClass && (
-                                      <div className="absolute inset-0 bg-gradient-to-r from-white/25 to-transparent rounded-full" />
-                                    )}
-                                  </motion.div>
+                                  />
                                 </div>
                               </motion.div>
                             );
@@ -1002,132 +1310,100 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Confidence disclaimer warning if low */}
-                      {result.confidence < 60 && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 6 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ duration: 0.4, delay: 0.5 }}
-                          className="bg-amber-50/80 border border-amber-200/80 rounded-xl p-3.5 text-xs text-amber-800 flex gap-2.5"
-                        >
-                          <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                          <p className="leading-relaxed font-medium">
-                            Confidence is below 60% — try a clearer, well-lit photo with the flower filling more of the frame for a more reliable result.
+                      {/* Horticultural Care & Fun Facts */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                        {/* Care Instructions */}
+                        <div className="bg-stone-50/70 rounded-xl p-4 border border-stone-200/60 space-y-2.5">
+                          <h5 className="text-xs uppercase font-extrabold tracking-wider text-emerald-800 flex items-center gap-1.5">
+                            <Sprout className="w-3.5 h-3.5 text-emerald-700" />
+                            <span>Care & Cultivation</span>
+                          </h5>
+                          <ul className="space-y-1.5 text-xs text-stone-600">
+                            {result.careInstructions.map((instruction: string, i: number) => (
+                              <li key={i} className="flex items-start gap-2">
+                                <span className="text-emerald-600 font-bold">•</span>
+                                <span className="leading-relaxed">{instruction}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+
+                        {/* Botanical Fun Fact */}
+                        <div className="bg-amber-50/60 rounded-xl p-4 border border-amber-200/60 space-y-2.5">
+                          <h5 className="text-xs uppercase font-extrabold tracking-wider text-amber-900 flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-amber-700" />
+                            <span>Did You Know?</span>
+                          </h5>
+                          <p className="text-xs text-amber-950 leading-relaxed font-light">
+                            {result.funFact}
                           </p>
-                        </motion.div>
-                      )}
-                    </div>
-                  </motion.div>
-
-                  {/* Card 3: Fun Fact Card */}
-                  <motion.div
-                    variants={{
-                      hidden: { opacity: 0, y: 14, scale: 0.99 },
-                      visible: {
-                        opacity: 1,
-                        y: 0,
-                        scale: 1,
-                        transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] }
-                      }
-                    }}
-                    className="bg-white border border-stone-200/80 rounded-2xl p-6 shadow-sm relative overflow-hidden"
-                  >
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-50/30 rounded-full -mr-16 -mt-16 -z-0" />
-                    <div className="relative z-10 space-y-2">
-                      <h4 className="text-xs uppercase font-extrabold tracking-wider text-emerald-800 flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>Botanical Fun Fact</span>
-                      </h4>
-                      <p className="text-stone-700 text-sm leading-relaxed font-light">
-                        {result.funFact}
-                      </p>
-                    </div>
-                  </motion.div>
-
-                  {/* Card 4: Botanical Care Guidelines */}
-                  <motion.div
-                    variants={{
-                      hidden: { opacity: 0, y: 14, scale: 0.99 },
-                      visible: {
-                        opacity: 1,
-                        y: 0,
-                        scale: 1,
-                        transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] }
-                      }
-                    }}
-                    className="bg-white border border-stone-200/80 rounded-2xl p-6 shadow-sm space-y-4"
-                  >
-                    <h4 className="text-xs uppercase font-extrabold tracking-wider text-stone-400">Species Cultivation & Care</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {result.careInstructions.map((instruction, index) => {
-                        const iconClass = "w-5 h-5 text-emerald-700 flex-shrink-0";
-                        const icons = [
-                          <Sun className={iconClass} />,
-                          <Droplet className={iconClass} />,
-                          <Sprout className={iconClass} />
-                        ];
-                        const labels = ["Sunlight Exposure", "Water Schedule", "Soil & Feeding"];
-
-                        return (
-                          <motion.div
-                            key={index}
-                            initial={{ opacity: 0, y: 8 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{
-                              duration: 0.4,
-                              delay: 0.3 + index * 0.1,
-                              ease: [0.22, 1, 0.36, 1]
-                            }}
-                            className="flex gap-3 bg-stone-50/50 rounded-xl p-3 border border-stone-200/40 hover:bg-stone-50 transition-colors"
-                          >
-                            {icons[index % icons.length]}
-                            <div>
-                              <p className="text-[11px] font-bold text-stone-500 uppercase tracking-tight">
-                                {labels[index % labels.length]}
-                              </p>
-                              <p className="text-xs text-stone-700 mt-1 font-light leading-relaxed">
-                                {instruction}
-                              </p>
-                            </div>
-                          </motion.div>
-                        );
-                      })}
+                        </div>
+                      </div>
                     </div>
                   </motion.div>
                 </motion.div>
               )}
 
-              {/* 4. Idle Placeholder State */}
-              {!isAnalyzing && !result && !error && (
+              {/* 5. Idle Empty Slate */}
+              {!result && !isAnalyzing && !error && !localUnindexedNotice && (
                 <motion.div
                   key="idle"
-                  initial={{ opacity: 0, scale: 0.98 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.98 }}
-                  className="bg-white border border-stone-200/80 rounded-2xl p-10 shadow-sm flex flex-col items-center justify-center text-center space-y-4 min-h-[460px]"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="bg-white border border-stone-200/80 rounded-2xl p-12 text-center flex flex-col items-center justify-center min-h-[460px] space-y-4 shadow-sm"
                 >
-                  <div className="w-14 h-14 bg-emerald-50 text-emerald-800 rounded-full flex items-center justify-center">
-                    <ImageIcon className="w-6 h-6" />
+                  <div className="w-16 h-16 bg-emerald-50 border border-emerald-100 rounded-full flex items-center justify-center text-emerald-700 shadow-xs">
+                    <Leaf className="w-8 h-8" />
                   </div>
                   <div className="max-w-md space-y-1.5">
-                    <h3 className="text-base font-serif font-extrabold text-stone-900">Awaiting Botanical Input</h3>
+                    <h3 className="text-lg font-serif font-bold text-stone-900">
+                      Ready for Botanical Vision
+                    </h3>
                     <p className="text-xs sm:text-sm text-stone-500 leading-relaxed font-light">
-                      Please upload a local photo or click one of the quick-test cards in the Sample Botanical Garden on the left to reveal predictions, taxonomy, and care insights!
+                      Upload your flower photograph or pick one of the curated samples on the left. Toggle between <strong>Local ML Model</strong> and <strong>Cloud AI Multimodal Model</strong> anytime.
                     </p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                    <span className="inline-flex items-center gap-1 text-xs text-stone-600 bg-stone-100 px-3 py-1 rounded-full font-medium">
+                      <Cpu className="w-3.5 h-3.5 text-emerald-700" />
+                      Instant Local ML
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-xs text-stone-600 bg-stone-100 px-3 py-1 rounded-full font-medium">
+                      <Key className="w-3.5 h-3.5 text-purple-700" />
+                      Individual API Key
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-xs text-stone-600 bg-stone-100 px-3 py-1 rounded-full font-medium">
+                      <Brain className="w-3.5 h-3.5 text-teal-700" />
+                      Continual Learning
+                    </span>
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
-
         </div>
       </div>
 
-      {/* 106-Species Botanical Catalog Explorer Modal */}
+      {/* 106-Species Catalog Modal */}
       <SpeciesCatalogModal
         isOpen={isCatalogOpen}
         onClose={() => setIsCatalogOpen(false)}
+      />
+
+      {/* Continual Learning Memory Modal */}
+      <LearnedKnowledgeModal
+        isOpen={isLearnedModalOpen}
+        onClose={() => setIsLearnedModalOpen(false)}
+        learnedList={learnedSpeciesList}
+        onLearnedListUpdated={refreshLearnedSpecies}
+        onSelectSampleToTest={(thumb) => {
+          setImagePreview(thumb);
+          setSelectedFile(null);
+          setSelectedSampleId(null);
+          setResult(null);
+          setError(null);
+          setLocalUnindexedNotice(null);
+        }}
       />
     </div>
   );

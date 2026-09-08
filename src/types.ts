@@ -1,3 +1,5 @@
+export type DetectionMode = "local" | "ai" | "auto";
+
 export interface SampleImage {
   id: string;
   class: string;
@@ -23,7 +25,12 @@ export interface DetectionResult {
   funFact: string;
   careInstructions: string[];
   error?: string;
-  source: "Trained ML Model (On-Device Dataset)" | "Cloud AI Vision & Internet Knowledge (Gemini)";
+  source:
+    | "Trained ML Model (On-Device Dataset)"
+    | "Local ML Model (Learned Memory Cache)"
+    | "Cloud AI Vision & Internet Knowledge (Gemini)";
   shiftReason?: string;
-  pipelineStage?: "ml_trained" | "ai_cloud";
+  pipelineStage?: "ml_trained" | "ml_learned" | "ai_cloud";
+  isNewlyLearned?: boolean;
 }
+

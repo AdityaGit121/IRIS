@@ -1,11 +1,21 @@
-import { FLOWER_DATASET, FlowerDetail } from "../flowerDataset";
+import { FlowerDetail } from "../flowerDataset";
 import { ConfidenceScore } from "../types";
+import {
+  getCombinedBotanicalDataset,
+  getLearnedSpecies,
+  matchLearnedSpecies,
+  extractImageFingerprint,
+  LearnedSpecies,
+  VisualFingerprint
+} from "./localKnowledgeBase";
 
 export interface BotanicalClassification {
   matchedKey: string | null;
   confidence: number;
   confidenceScores: ConfidenceScore[];
   isFlowerLikely: boolean;
+  isLearnedFromAI?: boolean;
+  learnedSpecies?: LearnedSpecies;
   botanicalTraits: {
     dominantHue: number;
     saturation: number;
@@ -13,6 +23,7 @@ export interface BotanicalClassification {
     hasContrastingCenter: boolean;
     greenFoliageRatio: number;
   };
+  visualFingerprint?: VisualFingerprint;
 }
 
 // Chromatic and morphological characteristics for the 106 botanical species
@@ -189,10 +200,50 @@ export async function classifyBotanicalSpecimen(
 
   const isFlowerLikely = (floralPixelCount / totalSampled > 0.12) || (greenFoliageRatio > 0.15);
 
-  // Score across all 106 species in FLOWER_DATASET
+  const combinedCatalog = getCombinedBotanicalDataset();
+  const fingerprint = await extractImageFingerprint(imgElement);
+
+  // Check against learned memory from Cloud AI first
+  const learnedMatch = matchLearnedSpecies(fingerprint, mobileNetPreds);
+  if (learnedMatch && learnedMatch.confidence >= 45) {
+    const item = learnedMatch.matched;
+    const confidenceScores: ConfidenceScore[] = [
+      { class: item.key, confidence: learnedMatch.confidence }
+    ];
+
+    const otherKeys = Object.keys(combinedCatalog)
+      .filter((k) => k !== item.key)
+      .slice(0, 4);
+
+    let remainingPct = 100 - learnedMatch.confidence;
+    otherKeys.forEach((key, idx) => {
+      const pct = idx === otherKeys.length - 1 ? remainingPct : Math.max(1, Math.round(remainingPct * 0.35));
+      remainingPct -= pct;
+      confidenceScores.push({ class: key, confidence: Math.max(1, pct) });
+    });
+
+    return {
+      matchedKey: item.key,
+      confidence: learnedMatch.confidence,
+      confidenceScores: confidenceScores.sort((a, b) => b.confidence - a.confidence),
+      isFlowerLikely: true,
+      isLearnedFromAI: true,
+      learnedSpecies: item,
+      botanicalTraits: {
+        dominantHue: fingerprint?.dominantHue || 45,
+        saturation: fingerprint?.saturation || 50,
+        brightness: fingerprint?.brightness || 60,
+        hasContrastingCenter: false,
+        greenFoliageRatio: fingerprint?.greenFoliageRatio || 30
+      },
+      visualFingerprint: fingerprint
+    };
+  }
+
+  // Score across all species in combinedCatalog (106 built-in + all learned)
   const speciesScores: Array<{ key: string; score: number }> = [];
 
-  for (const [key, detail] of Object.entries(FLOWER_DATASET)) {
+  for (const [key, detail] of Object.entries(combinedCatalog)) {
     let score = 0;
 
     // 1. MobileNet Correlation (Strongest direct convolutional indicator)
@@ -305,12 +356,13 @@ export async function classifyBotanicalSpecimen(
 function fallbackClassification(
   mobileNetPreds: Array<{ className: string; probability: number }>
 ): BotanicalClassification {
+  const combinedCatalog = getCombinedBotanicalDataset();
   let bestKey: string | null = null;
   let bestProb = 0;
 
   for (const pred of mobileNetPreds) {
     const normalized = pred.className.toLowerCase();
-    for (const [key, detail] of Object.entries(FLOWER_DATASET)) {
+    for (const [key, detail] of Object.entries(combinedCatalog)) {
       const terms = [key, ...(detail.aliases || []), detail.scientificName.toLowerCase()];
       const isMatch = terms.some((term) => {
         const clean = term.toLowerCase().trim();
@@ -329,7 +381,7 @@ function fallbackClassification(
 
   if (bestKey) {
     confidenceScores.push({ class: bestKey, confidence: Math.max(45, confidencePct) });
-    const others = Object.keys(FLOWER_DATASET).filter((k) => k !== bestKey).slice(0, 4);
+    const others = Object.keys(combinedCatalog).filter((k) => k !== bestKey).slice(0, 4);
     let remaining = 100 - confidenceScores[0].confidence;
     others.forEach((k, idx) => {
       const share = idx === others.length - 1 ? remaining : Math.round(remaining * 0.4);
