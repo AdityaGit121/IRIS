@@ -137,25 +137,32 @@ app.post("/api/detect", async (req, res) => {
         base64Data = await downloadExternalImage(sample.path);
       }
     } else if (image) {
-      // Extract base64 and mimeType from user dataUrl e.g. "data:image/png;base64,..."
-      const match = image.match(/^data:(image\/\w+);base64,(.+)$/);
-      if (match) {
-        mimeType = match[1];
-        base64Data = match[2];
+      if (typeof image === "string" && (image.startsWith("http://") || image.startsWith("https://"))) {
+        // Download external image URL
+        base64Data = await downloadExternalImage(image);
+        mimeType = image.includes(".png") ? "image/png" : "image/jpeg";
       } else {
-        // Assume direct base64
-        base64Data = image;
+        // Extract base64 and mimeType from user dataUrl e.g. "data:image/png;base64,..."
+        const match = typeof image === "string" ? image.match(/^data:(image\/\w+);base64,(.+)$/) : null;
+        if (match) {
+          mimeType = match[1];
+          base64Data = match[2];
+        } else {
+          // Assume direct base64
+          base64Data = image;
+        }
       }
     } else {
-      return res.status(400).json({ error: "No image data or sample ID provided" });
+      return res.status(400).json({ isFlower: false, error: "No image data or sample ID provided" });
     }
 
     if (!base64Data) {
-      return res.status(400).json({ error: "Empty image data obtained" });
+      return res.status(400).json({ isFlower: false, error: "Empty image data obtained. Please choose a valid image file." });
     }
 
     if (!apiKey) {
       return res.status(503).json({
+        isFlower: false,
         error: "Gemini API key is not configured in the AI Studio platform yet. Please check your Settings > Secrets panel."
       });
     }
@@ -185,7 +192,7 @@ If it is a flower or plant:
 10. For confidenceScores, calculate a realistic probability distribution (summing to exactly 100%) for the top 5 most closely related or visually similar botanical species/cultivars based on the image's features. The winning class must match the 'class' field and have the highest confidence score.`,
     };
 
-    const candidateModels = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+    const candidateModels = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
     let lastError: any = null;
     let response: any = null;
 
@@ -291,20 +298,57 @@ If it is a flower or plant:
     }
 
     if (!response || !response.text) {
-      throw lastError || new Error("All candidate models failed to generate a response");
+      throw lastError || new Error("Cloud AI models were temporarily unable to process the image. Please verify your connection or try another botanical angle.");
     }
 
     const resultText = response.text;
-    const resultJson = JSON.parse(resultText);
-    res.json(resultJson);
+    try {
+      const resultJson = JSON.parse(resultText);
+      res.setHeader("Content-Type", "application/json");
+      return res.json(resultJson);
+    } catch (jsonErr) {
+      console.error("Failed to parse Gemini response as JSON:", resultText);
+      return res.status(200).json({
+        isFlower: false,
+        error: "Cloud AI responded with an unstructured response. Please try taking a closer photo of the flower."
+      });
+    }
 
   } catch (error: any) {
     console.error("Classification error:", error);
-    res.status(500).json({
-      error: "An error occurred during classification. Please make sure the image is valid and the API key is active.",
-      details: error.message || error
+    res.setHeader("Content-Type", "application/json");
+
+    let cleanMsg = error?.message || "An error occurred during Cloud AI classification.";
+    try {
+      if (cleanMsg.startsWith("{") && cleanMsg.includes('"message"')) {
+        const parsed = JSON.parse(cleanMsg);
+        if (parsed.error && parsed.error.message) {
+          cleanMsg = parsed.error.message;
+        }
+      }
+    } catch (_) {}
+
+    if (cleanMsg.includes("429") || cleanMsg.includes("RESOURCE_EXHAUSTED") || cleanMsg.includes("quota")) {
+      cleanMsg = "Cloud AI API request limit temporarily reached on the free tier. Please wait a moment and try again, or use specimens identified by our on-device ML engine.";
+    } else if (cleanMsg.includes("400") || cleanMsg.includes("INVALID_ARGUMENT")) {
+      cleanMsg = "The image provided could not be processed by Cloud AI. Please choose a clear, supported image file (JPG, PNG).";
+    }
+
+    return res.status(200).json({
+      isFlower: false,
+      error: cleanMsg
     });
   }
+});
+
+// Express global error handler to guarantee valid JSON responses under all conditions
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error("Global Express Error Handler caught:", err);
+  res.setHeader("Content-Type", "application/json");
+  res.status(500).json({
+    isFlower: false,
+    error: err?.message || "A server error occurred. Please try again."
+  });
 });
 
 export default app;
