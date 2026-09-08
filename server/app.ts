@@ -46,6 +46,14 @@ const SAMPLES = [
     expectedEngine: "ml_trained"
   },
   {
+    id: "dandelion_1",
+    class: "dandelion",
+    name: "Dandelion (Trained ML)",
+    path: "https://images.unsplash.com/photo-1527631746610-bca00a040d60?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ml_trained"
+  },
+  {
     id: "orchid_1",
     class: "orchid",
     name: "Exotic Orchid (Shifts to AI)",
@@ -66,6 +74,14 @@ const SAMPLES = [
     class: "hibiscus",
     name: "Tropical Hibiscus (Shifts to AI)",
     path: "https://images.unsplash.com/photo-1550950158-d0d960dff51b?auto=format&fit=crop&w=600&q=80",
+    isLocal: false,
+    expectedEngine: "ai_cloud"
+  },
+  {
+    id: "birdofparadise_1",
+    class: "bird of paradise",
+    name: "Bird of Paradise (Shifts to AI)",
+    path: "https://images.unsplash.com/photo-1544816155-12df9643f363?auto=format&fit=crop&w=600&q=80",
     isLocal: false,
     expectedEngine: "ai_cloud"
   }

@@ -20,63 +20,63 @@ import {
   ArrowRight,
   ShieldCheck,
   Zap,
-  Layers
+  Layers,
+  BookOpen
 } from "lucide-react";
 import * as tf from "@tensorflow/tfjs";
 import * as mobilenet from "@tensorflow-models/mobilenet";
 import { FLOWER_DATASET } from "./flowerDataset";
 import { SampleImage, DetectionResult, ConfidenceScore } from "./types";
+import { SpeciesCatalogModal } from "./components/SpeciesCatalogModal";
 
-const FLOWER_PALETTES: Record<string, { bg: string; text: string; border: string; accent: string; emoji: string; textClass: string }> = {
-  daisy: {
-    bg: "bg-amber-50/70",
-    text: "text-amber-900",
-    border: "border-amber-200",
-    accent: "#f59e0b",
-    emoji: "🌼",
-    textClass: "text-amber-800",
-  },
-  dandelion: {
-    bg: "bg-yellow-50/70",
-    text: "text-yellow-900",
-    border: "border-yellow-200",
-    accent: "#eab308",
-    emoji: "🌾",
-    textClass: "text-yellow-800",
-  },
-  rose: {
-    bg: "bg-rose-50/70",
-    text: "text-rose-900",
-    border: "border-rose-200",
-    accent: "#f43f5e",
-    emoji: "🌹",
-    textClass: "text-rose-800",
-  },
-  sunflower: {
-    bg: "bg-orange-50/70",
-    text: "text-orange-900",
-    border: "border-orange-200",
-    accent: "#ea580c",
-    emoji: "🌻",
-    textClass: "text-orange-800",
-  },
-  tulip: {
-    bg: "bg-purple-50/70",
-    text: "text-purple-900",
-    border: "border-purple-200",
-    accent: "#a855f7",
-    emoji: "🌷",
-    textClass: "text-purple-800",
-  },
-  unknown: {
-    bg: "bg-stone-50/70",
-    text: "text-stone-900",
-    border: "border-stone-200",
-    accent: "#78716c",
-    emoji: "🌸",
-    textClass: "text-stone-800",
-  }
+const FLOWER_EMOJI_MAP: Record<string, { emoji: string; accent: string; bg: string; border: string; textClass: string }> = {
+  daisy: { emoji: "🌼", accent: "#f59e0b", bg: "bg-amber-50/80", border: "border-amber-200", textClass: "text-amber-800" },
+  dandelion: { emoji: "🌾", accent: "#eab308", bg: "bg-yellow-50/80", border: "border-yellow-200", textClass: "text-yellow-800" },
+  rose: { emoji: "🌹", accent: "#f43f5e", bg: "bg-rose-50/80", border: "border-rose-200", textClass: "text-rose-800" },
+  sunflower: { emoji: "🌻", accent: "#ea580c", bg: "bg-orange-50/80", border: "border-orange-200", textClass: "text-orange-800" },
+  tulip: { emoji: "🌷", accent: "#a855f7", bg: "bg-purple-50/80", border: "border-purple-200", textClass: "text-purple-800" },
+  orchid: { emoji: "🌸", accent: "#ec4899", bg: "bg-pink-50/80", border: "border-pink-200", textClass: "text-pink-800" },
+  lavender: { emoji: "🪻", accent: "#8b5cf6", bg: "bg-violet-50/80", border: "border-violet-200", textClass: "text-violet-800" },
+  lily: { emoji: "⚜️", accent: "#0d9488", bg: "bg-teal-50/80", border: "border-teal-200", textClass: "text-teal-800" },
+  hibiscus: { emoji: "🌺", accent: "#ef4444", bg: "bg-red-50/80", border: "border-red-200", textClass: "text-red-800" },
+  lotus: { emoji: "🪷", accent: "#06b6d4", bg: "bg-cyan-50/80", border: "border-cyan-200", textClass: "text-cyan-800" },
+  "water lily": { emoji: "🪷", accent: "#0284c7", bg: "bg-sky-50/80", border: "border-sky-200", textClass: "text-sky-800" },
+  marigold: { emoji: "🏵️", accent: "#f59e0b", bg: "bg-amber-50/80", border: "border-amber-200", textClass: "text-amber-800" },
+  poppy: { emoji: "🌺", accent: "#dc2626", bg: "bg-red-50/80", border: "border-red-200", textClass: "text-red-800" },
+  iris: { emoji: "🪻", accent: "#7c3aed", bg: "bg-indigo-50/80", border: "border-indigo-200", textClass: "text-indigo-800" },
+  violet: { emoji: "💜", accent: "#9333ea", bg: "bg-purple-50/80", border: "border-purple-200", textClass: "text-purple-800" },
+  "bird of paradise": { emoji: "🦜", accent: "#f97316", bg: "bg-orange-50/80", border: "border-orange-200", textClass: "text-orange-800" },
+  bougainvillea: { emoji: "🌺", accent: "#d946ef", bg: "bg-fuchsia-50/80", border: "border-fuchsia-200", textClass: "text-fuchsia-800" },
+  hydrangea: { emoji: "💠", accent: "#3b82f6", bg: "bg-blue-50/80", border: "border-blue-200", textClass: "text-blue-800" },
+  carnation: { emoji: "🌸", accent: "#f43f5e", bg: "bg-rose-50/80", border: "border-rose-200", textClass: "text-rose-800" },
+  peony: { emoji: "🌸", accent: "#ec4899", bg: "bg-pink-50/80", border: "border-pink-200", textClass: "text-pink-800" },
+  dahlia: { emoji: "🌺", accent: "#e11d48", bg: "bg-rose-50/80", border: "border-rose-200", textClass: "text-rose-800" },
+  allium: { emoji: "🟣", accent: "#8b5cf6", bg: "bg-purple-50/80", border: "border-purple-200", textClass: "text-purple-800" },
+  daffodil: { emoji: "🌼", accent: "#eab308", bg: "bg-yellow-50/80", border: "border-yellow-200", textClass: "text-yellow-800" },
+  jasmine: { emoji: "🌼", accent: "#10b981", bg: "bg-emerald-50/80", border: "border-emerald-200", textClass: "text-emerald-800" },
+  magnolia: { emoji: "🤍", accent: "#64748b", bg: "bg-slate-50/80", border: "border-slate-200", textClass: "text-slate-800" },
+  passionflower: { emoji: "🌀", accent: "#6366f1", bg: "bg-indigo-50/80", border: "border-indigo-200", textClass: "text-indigo-800" }
 };
+
+function getFlowerPalette(name: string) {
+  const lower = (name || "").toLowerCase().trim();
+  for (const [key, val] of Object.entries(FLOWER_EMOJI_MAP)) {
+    if (lower.includes(key) || key.includes(lower)) {
+      return {
+        ...val,
+        text: val.textClass
+      };
+    }
+  }
+  return {
+    bg: "bg-emerald-50/70",
+    text: "text-emerald-950",
+    border: "border-emerald-200",
+    accent: "#059669",
+    emoji: "🌸",
+    textClass: "text-emerald-800"
+  };
+}
 
 export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -90,6 +90,7 @@ export default function App() {
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [apiOnline, setApiOnline] = useState<boolean>(true);
   const [samples, setSamples] = useState<SampleImage[]>([]);
+  const [isCatalogOpen, setIsCatalogOpen] = useState<boolean>(false);
 
   // TensorFlow.js state
   const [mlModel, setMlModel] = useState<mobilenet.MobileNet | null>(null);
@@ -232,11 +233,22 @@ export default function App() {
         console.log("Stage 1 - Trained ML Predictions:", predictions);
 
         if (predictions && predictions.length > 0) {
-          // Search top predictions for a match in our 100+ FLOWER_DATASET
+          // Search top predictions for a match in our 106 FLOWER_DATASET
           for (const pred of predictions) {
             const normalized = pred.className.toLowerCase();
-            for (const key of Object.keys(FLOWER_DATASET)) {
-              if (normalized.includes(key) || key.includes(normalized)) {
+            for (const [key, detail] of Object.entries(FLOWER_DATASET)) {
+              const terms = [
+                key,
+                ...(detail.aliases || []),
+                detail.scientificName.toLowerCase()
+              ];
+
+              const isMatch = terms.some((term) => {
+                const clean = term.toLowerCase().trim();
+                return normalized.includes(clean) || clean.includes(normalized);
+              });
+
+              if (isMatch) {
                 matchedKey = key;
                 matchedPred = pred;
                 break;
@@ -274,14 +286,14 @@ export default function App() {
               confidence: Math.round(matchedPred.probability * 100),
               confidenceScores: scores.sort((a, b) => b.confidence - a.confidence),
               scientificName: localDetail.scientificName,
-              botanicalFamily: "Locally Indexed Botanical Family",
-              nativeRegion: "Cultivated & Distributed Globally",
+              botanicalFamily: localDetail.botanicalFamily,
+              nativeRegion: localDetail.nativeRegion,
               description: localDetail.description,
               funFact: localDetail.funFact,
               careInstructions: localDetail.careInstructions,
               source: "Trained ML Model (On-Device Dataset)",
               pipelineStage: "ml_trained",
-              shiftReason: "Identified directly by trained convolutional neural network weights (100+ indexed flora classes). Zero cloud latency."
+              shiftReason: "Identified directly by trained convolutional neural network weights (106 combined botanical flora classes). Zero cloud latency."
             });
             setIsAnalyzing(false);
             setAnalysisPhase("idle");
@@ -351,7 +363,7 @@ export default function App() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const activePalette = result ? FLOWER_PALETTES[result.class.toLowerCase()] || FLOWER_PALETTES.unknown : FLOWER_PALETTES.unknown;
+  const activePalette = result ? getFlowerPalette(result.class) : getFlowerPalette("unknown");
 
   return (
     <div id="app-container" className="min-h-screen bg-stone-50/50 text-stone-800 font-sans selection:bg-emerald-100 selection:text-emerald-950 pb-16">
@@ -391,6 +403,17 @@ export default function App() {
               <Sprout className={`w-3.5 h-3.5 text-teal-700 ${isModelLoading ? "animate-spin" : ""}`} />
               <span>{isModelLoading ? "Initializing Local ML..." : "Local TensorFlow.js Active"}</span>
             </motion.div>
+
+            <motion.button
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.15 }}
+              onClick={() => setIsCatalogOpen(true)}
+              className="inline-flex items-center gap-2 bg-emerald-800 hover:bg-emerald-900 text-white px-3.5 py-1 rounded-full text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>106-Species Botanical Catalog</span>
+            </motion.button>
           </div>
           <motion.h1
             initial={{ opacity: 0, y: 10 }}
@@ -558,7 +581,7 @@ export default function App() {
                           {sample.name.replace(/\(.*\)/, "")}
                         </span>
                         <span className="text-sm select-none">
-                          {sample.class === "daisy" ? "🌼" : sample.class === "rose" ? "🌹" : sample.class === "sunflower" ? "🌻" : sample.class === "orchid" ? "🌸" : sample.class === "lotus" ? "🪷" : "🌺"}
+                          {getFlowerPalette(sample.class).emoji}
                         </span>
                       </div>
                       <div className="mt-2">
@@ -588,13 +611,21 @@ export default function App() {
 
             {/* Workflow Architecture Card */}
             <section className="bg-stone-100/60 border border-stone-200/80 rounded-2xl p-4.5 text-xs text-stone-600 space-y-2">
-              <div className="flex items-center gap-1.5 font-bold text-stone-900">
-                <ShieldCheck className="w-4 h-4 text-emerald-700" />
-                <span>Dual-Engine Reliability</span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-bold text-stone-900">
+                  <ShieldCheck className="w-4 h-4 text-emerald-700" />
+                  <span>Dual-Engine Reliability</span>
+                </div>
+                <button
+                  onClick={() => setIsCatalogOpen(true)}
+                  className="text-[10px] text-emerald-700 hover:text-emerald-800 font-bold underline cursor-pointer"
+                >
+                  View 106 Classes
+                </button>
               </div>
               <p className="leading-relaxed font-light text-[11px]">
-                1. <strong>Trained ML Model</strong> scans on-device with 100+ botanical classes.<br />
-                2. If confidence &lt; 40% or specimen is unindexed, the system <strong>automatically shifts to Cloud AI</strong> using the API key to search internet taxonomy (400,000+ species).
+                1. <strong>Trained ML Model</strong> scans on-device across 106 verified botanical species.<br />
+                2. If confidence &lt; 40% or specimen is unindexed, the system <strong>automatically shifts to Cloud AI</strong> using the API key to query global internet taxonomy (400,000+ species).
               </p>
             </section>
           </div>
@@ -1084,6 +1115,12 @@ export default function App() {
 
         </div>
       </div>
+
+      {/* 106-Species Botanical Catalog Explorer Modal */}
+      <SpeciesCatalogModal
+        isOpen={isCatalogOpen}
+        onClose={() => setIsCatalogOpen(false)}
+      />
     </div>
   );
 }
