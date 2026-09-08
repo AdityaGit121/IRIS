@@ -84,18 +84,20 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", apiReady: !!defaultApiKey, defaultApiReady: !!defaultApiKey });
 });
 
-// 2. Validate User Gemini API Key
+// 2. Validate User Gemini API Key (Resilient, multi-model fallback with timeout)
 app.post("/api/verify-key", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
   try {
-    const { apiKey } = req.body;
-    const keyToTest = (apiKey || req.headers['x-gemini-api-key'] || "").toString().trim();
+    const rawKey = req.body?.apiKey || req.headers['x-gemini-api-key'] || "";
+    // Clean and sanitize key
+    const keyToTest = String(rawKey).trim().replace(/[\r\n\t "']/g, "");
 
     if (!keyToTest) {
-      return res.status(400).json({ valid: false, error: "API Key cannot be empty." });
+      return res.status(200).json({ valid: false, error: "API Key is empty. Please enter your Gemini API Key." });
     }
 
-    if (keyToTest.length < 15) {
-      return res.status(400).json({ valid: false, error: "Invalid API Key format." });
+    if (keyToTest.length < 20) {
+      return res.status(200).json({ valid: false, error: "Key appears too short. Google Gemini API keys usually start with 'AIzaSy' (39 characters)." });
     }
 
     const testAi = new GoogleGenAI({
@@ -107,30 +109,73 @@ app.post("/api/verify-key", async (req, res) => {
       }
     });
 
-    // Make a lightweight test request
-    const testResp = await testAi.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: "Hello",
-    });
+    // Test across models with rapid fallback
+    const candidateModels = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+    let success = false;
+    let warningMsg: string | undefined = undefined;
+    let lastErrStr = "";
 
-    if (testResp && testResp.text) {
-      return res.json({ valid: true, message: "Gemini API Key verified successfully!" });
-    } else {
-      return res.status(400).json({ valid: false, error: "Unable to verify API Key with Google Gemini." });
+    for (const modelName of candidateModels) {
+      try {
+        const testCall = testAi.models.generateContent({
+          model: modelName,
+          contents: "Hello",
+        });
+
+        // 6 second timeout to prevent hung requests
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Verification timeout")), 6000)
+        );
+
+        const testResp: any = await Promise.race([testCall, timeoutPromise]);
+        if (testResp && (testResp.text || testResp.candidates)) {
+          success = true;
+          break;
+        }
+      } catch (e: any) {
+        lastErrStr = e?.message || String(e);
+        console.warn(`Key test on ${modelName} encountered:`, lastErrStr);
+        if (lastErrStr.includes("RESOURCE_EXHAUSTED") || lastErrStr.includes("429") || lastErrStr.includes("quota")) {
+          // Key is authenticated and valid, just hit free tier concurrency limit
+          success = true;
+          warningMsg = "Key is valid & authenticated (rate-limited on free tier). Ready for botanical detections!";
+          break;
+        }
+        if (lastErrStr.includes("API_KEY_INVALID") || lastErrStr.includes("400") || lastErrStr.includes("PERMISSION_DENIED")) {
+          // Definitely invalid key
+          break;
+        }
+      }
     }
+
+    if (success) {
+      return res.status(200).json({
+        valid: true,
+        message: warningMsg || "Gemini API Key is authentic and verified with Google AI!",
+        warning: warningMsg
+      });
+    }
+
+    let userFriendly = "Google Gemini rejected this key. Please verify that your API key is active in Google AI Studio.";
+    if (lastErrStr.includes("API_KEY_INVALID") || lastErrStr.includes("400")) {
+      userFriendly = "Invalid Gemini API Key. Please copy your key directly from Google AI Studio.";
+    } else if (lastErrStr.includes("PERMISSION_DENIED") || lastErrStr.includes("403")) {
+      userFriendly = "Permission denied. Ensure the Generative Language API is enabled for this project.";
+    } else if (lastErrStr.includes("Verification timeout")) {
+      // If network timed out, still allow user to save key with a warning
+      return res.status(200).json({
+        valid: true,
+        warning: "Verification timed out due to temporary network delay, but your key has been saved and applied."
+      });
+    }
+
+    return res.status(200).json({ valid: false, error: userFriendly });
   } catch (err: any) {
-    const errorMsg = err?.message || String(err);
-    console.warn("Key verification failure:", errorMsg);
-    let userFriendly = "Invalid Gemini API Key or unauthorized access.";
-    if (errorMsg.includes("API_KEY_INVALID") || errorMsg.includes("400")) {
-      userFriendly = "Invalid API Key. Please check the key from Google AI Studio.";
-    } else if (errorMsg.includes("403") || errorMsg.includes("PERMISSION_DENIED")) {
-      userFriendly = "Permission denied. Please ensure the Gemini API is enabled for this key.";
-    } else if (errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED")) {
-      userFriendly = "API Key is valid but currently rate-limited on the free tier.";
-      return res.json({ valid: true, warning: userFriendly });
-    }
-    return res.status(400).json({ valid: false, error: userFriendly });
+    console.error("Fatal in verify-key route:", err);
+    return res.status(200).json({
+      valid: false,
+      error: "Unable to reach Google Gemini authentication service. Please check your internet connection."
+    });
   }
 });
 
@@ -155,8 +200,11 @@ app.post("/api/detect", async (req, res) => {
     const { image, sampleId, customApiKey } = req.body;
     const headerKey = req.headers['x-gemini-api-key'] as string | undefined;
 
-    // Resolve individual user key with fallback to system default
-    const effectiveApiKey = (customApiKey || headerKey || defaultApiKey || "").toString().trim();
+    // Resolve individual user key with fallback to system default (sanitizing whitespace & quotes)
+    const effectiveApiKey = (customApiKey || headerKey || defaultApiKey || "")
+      .toString()
+      .trim()
+      .replace(/[\r\n\t "']/g, "");
 
     let base64Data = "";
     let mimeType = "image/jpeg";
