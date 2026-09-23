@@ -20,7 +20,10 @@ import {
   Layers,
   BookOpen,
   Brain,
-  Key
+  Key,
+  Video,
+  Radio,
+  CheckCircle2
 } from "lucide-react";
 import * as tf from "@tensorflow/tfjs";
 import * as mobilenet from "@tensorflow-models/mobilenet";
@@ -28,6 +31,7 @@ import { SampleImage, DetectionResult, ConfidenceScore, DetectionMode } from "./
 import { SpeciesCatalogModal } from "./components/SpeciesCatalogModal";
 import { LearnedKnowledgeModal } from "./components/LearnedKnowledgeModal";
 import { ApiKeyDropdown } from "./components/ApiKeyDropdown";
+import { LiveFeedScanner } from "./components/LiveFeedScanner";
 import { classifyBotanicalSpecimen } from "./utils/botanicalClassifier";
 import {
   getLearnedSpecies,
@@ -182,6 +186,9 @@ export default function App() {
   const [samples, setSamples] = useState<SampleImage[]>(DEFAULT_SAMPLES);
   const [isCatalogOpen, setIsCatalogOpen] = useState<boolean>(false);
   const [isLearnedModalOpen, setIsLearnedModalOpen] = useState<boolean>(false);
+
+  // Input Source Mode: "upload" (photo/samples) vs "feed" (live webcam & stream links)
+  const [inputSourceMode, setInputSourceMode] = useState<"upload" | "feed">("upload");
 
   // Continual Learning Engine state
   const [learnedSpeciesList, setLearnedSpeciesList] = useState<LearnedSpecies[]>([]);
@@ -568,6 +575,21 @@ export default function App() {
     await runCloudAIDetection(shiftExplanation);
   };
 
+  // Handler for frame captured from Live Webcam or Stream Link
+  const handleCapturedFrame = (dataUrl: string, autoRun = false) => {
+    setSelectedFile(null);
+    setSelectedSampleId(null);
+    setImagePreview(dataUrl);
+    setError(null);
+    setLocalUnindexedNotice(null);
+
+    if (autoRun) {
+      setTimeout(() => {
+        runDetection();
+      }, 200);
+    }
+  };
+
   // Clear states
   const resetApp = () => {
     setSelectedFile(null);
@@ -762,126 +784,228 @@ export default function App() {
           <div className="lg:col-span-4 space-y-6">
             {/* Input card */}
             <section id="upload-panel" className="bg-white border border-stone-200/80 rounded-2xl p-6 shadow-sm">
-              <h2 className="text-base font-bold text-stone-900 mb-4 flex items-center gap-2">
-                <Camera className="w-4 h-4 text-emerald-700" />
-                <span>Choose Flower Image</span>
-              </h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-base font-bold text-stone-900 flex items-center gap-2">
+                  <Camera className="w-4 h-4 text-emerald-700" />
+                  <span>Input Specimen</span>
+                </h2>
 
-              {/* Upload Zone */}
-              <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                onClick={imagePreview ? undefined : triggerFileInput}
-                className={`relative border-2 border-dashed rounded-xl p-6 transition-all duration-200 text-center cursor-pointer ${
-                  isDragOver
-                    ? "border-emerald-500 bg-emerald-50/30 scale-[0.99]"
-                    : imagePreview
-                    ? "border-stone-200 bg-stone-50/50 cursor-default"
-                    : "border-stone-300 hover:border-emerald-600 hover:bg-stone-50/30"
-                }`}
-              >
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleFileChange}
-                  accept="image/*"
-                  className="hidden"
-                />
-
-                <AnimatePresence mode="wait">
-                  {imagePreview ? (
-                    <motion.div
-                      key="preview"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className="relative rounded-lg overflow-hidden max-h-72 flex items-center justify-center bg-stone-100"
-                    >
-                      <img
-                        ref={previewImgRef}
-                        src={imagePreview}
-                        alt="Target flower preview"
-                        className="object-contain max-h-72 w-full select-none"
-                        referrerPolicy="no-referrer"
-                        crossOrigin="anonymous"
-                      />
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          resetApp();
-                        }}
-                        className="absolute top-2.5 right-2.5 bg-stone-900/80 text-white hover:bg-stone-950 p-1.5 rounded-full shadow-md transition-colors cursor-pointer"
-                        title="Remove image"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </motion.div>
-                  ) : (
-                    <motion.div
-                      key="prompt"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className="py-6 space-y-2.5"
-                    >
-                      <div className="mx-auto w-10 h-10 bg-emerald-50 text-emerald-700 rounded-full flex items-center justify-center">
-                        <Upload className="w-5 h-5" />
-                      </div>
-                      <div className="text-sm font-medium text-stone-700">
-                        Drag and drop your flower photo here
-                      </div>
-                      <p className="text-xs text-stone-500">
-                        Supports JPG, PNG, WEBP up to 10MB
-                      </p>
-                      <span className="inline-block mt-2 bg-stone-100 hover:bg-stone-200/80 text-stone-800 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors border border-stone-200">
-                        Or select manually
-                      </span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Action Button */}
-              {imagePreview && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mt-5 flex gap-3"
-                >
+                {/* Input Mode Tabs: Upload vs Live Video Feed */}
+                <div className="flex bg-stone-100 p-1 rounded-xl border border-stone-200/80">
                   <button
-                    id="btn-run-detection"
-                    onClick={runDetection}
-                    disabled={isAnalyzing}
-                    className={`flex-1 font-semibold py-3 px-4 rounded-xl shadow-md active:scale-[0.98] disabled:opacity-50 transition-all flex items-center justify-center gap-2 text-sm text-white cursor-pointer ${
-                      detectionMode === "local"
-                        ? "bg-emerald-800 hover:bg-emerald-700 shadow-emerald-900/15"
-                        : detectionMode === "ai"
-                        ? "bg-purple-800 hover:bg-purple-700 shadow-purple-900/15"
-                        : "bg-teal-800 hover:bg-teal-700 shadow-teal-900/15"
+                    type="button"
+                    onClick={() => setInputSourceMode("upload")}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                      inputSourceMode === "upload"
+                        ? "bg-white text-stone-900 shadow-xs"
+                        : "text-stone-500 hover:text-stone-800"
                     }`}
                   >
-                    <Sparkles className="w-4 h-4 animate-pulse" />
-                    <span>
-                      {isAnalyzing
-                        ? "Executing Analysis..."
-                        : detectionMode === "local"
-                        ? "Detect with Local ML Model"
-                        : detectionMode === "ai"
-                        ? "Identify with Cloud AI Model"
-                        : "Analyze (Auto Dual-Engine)"}
-                    </span>
+                    <ImageIcon className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>Upload</span>
                   </button>
 
                   <button
-                    onClick={resetApp}
-                    disabled={isAnalyzing}
-                    className="bg-stone-100 hover:bg-stone-200 text-stone-700 p-3 rounded-xl border border-stone-200/80 transition-colors cursor-pointer"
-                    title="Reset App"
+                    type="button"
+                    onClick={() => setInputSourceMode("feed")}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                      inputSourceMode === "feed"
+                        ? "bg-white text-stone-900 shadow-xs"
+                        : "text-stone-500 hover:text-stone-800"
+                    }`}
                   >
-                    <RotateCcw className="w-4 h-4" />
+                    <Video className="w-3.5 h-3.5 text-purple-700" />
+                    <span className="flex items-center gap-1">
+                      <span>Live Feed</span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-ping" />
+                    </span>
                   </button>
-                </motion.div>
+                </div>
+              </div>
+
+              {/* MODE A: LIVE WEBCAM & STREAM SCANNER */}
+              {inputSourceMode === "feed" ? (
+                <div className="space-y-4">
+                  <LiveFeedScanner
+                    onCaptureFrame={handleCapturedFrame}
+                    isAnalyzing={isAnalyzing}
+                    activeDetectionMode={detectionMode}
+                  />
+
+                  {/* Hidden / Rendered Preview Ref for ML classifiers when frame is captured */}
+                  {imagePreview && (
+                    <div className="p-3 bg-stone-50 border border-stone-200 rounded-xl space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-stone-700 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Keyframe Loaded for Analysis</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={resetApp}
+                          className="text-[11px] text-stone-500 hover:text-red-700 font-medium"
+                        >
+                          Clear Frame
+                        </button>
+                      </div>
+
+                      <div className="relative rounded-lg overflow-hidden max-h-36 flex items-center justify-center bg-stone-950">
+                        <img
+                          ref={previewImgRef}
+                          src={imagePreview}
+                          alt="Captured keyframe preview"
+                          className="object-contain max-h-36 w-full select-none"
+                          referrerPolicy="no-referrer"
+                          crossOrigin="anonymous"
+                        />
+                      </div>
+
+                      <button
+                        id="btn-run-detection-feed"
+                        onClick={runDetection}
+                        disabled={isAnalyzing}
+                        className={`w-full font-semibold py-2.5 px-4 rounded-xl shadow-md active:scale-[0.98] disabled:opacity-50 transition-all flex items-center justify-center gap-2 text-xs text-white cursor-pointer ${
+                          detectionMode === "local"
+                            ? "bg-emerald-800 hover:bg-emerald-700 shadow-emerald-900/15"
+                            : detectionMode === "ai"
+                            ? "bg-purple-800 hover:bg-purple-700 shadow-purple-900/15"
+                            : "bg-teal-800 hover:bg-teal-700 shadow-teal-900/15"
+                        }`}
+                      >
+                        <Sparkles className="w-3.5 h-3.5 animate-pulse" />
+                        <span>
+                          {isAnalyzing
+                            ? "Executing Analysis..."
+                            : detectionMode === "local"
+                            ? "Run Local ML Classifier"
+                            : detectionMode === "ai"
+                            ? "Run Cloud AI Vision"
+                            : "Analyze (Auto Dual-Engine)"}
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* MODE B: STANDARD IMAGE UPLOAD ZONE */
+                <div>
+                  {/* Upload Zone */}
+                  <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onClick={imagePreview ? undefined : triggerFileInput}
+                    className={`relative border-2 border-dashed rounded-xl p-6 transition-all duration-200 text-center cursor-pointer ${
+                      isDragOver
+                        ? "border-emerald-500 bg-emerald-50/30 scale-[0.99]"
+                        : imagePreview
+                        ? "border-stone-200 bg-stone-50/50 cursor-default"
+                        : "border-stone-300 hover:border-emerald-600 hover:bg-stone-50/30"
+                    }`}
+                  >
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handleFileChange}
+                      accept="image/*"
+                      className="hidden"
+                    />
+
+                    <AnimatePresence mode="wait">
+                      {imagePreview ? (
+                        <motion.div
+                          key="preview"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          className="relative rounded-lg overflow-hidden max-h-72 flex items-center justify-center bg-stone-100"
+                        >
+                          <img
+                            ref={previewImgRef}
+                            src={imagePreview}
+                            alt="Target flower preview"
+                            className="object-contain max-h-72 w-full select-none"
+                            referrerPolicy="no-referrer"
+                            crossOrigin="anonymous"
+                          />
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              resetApp();
+                            }}
+                            className="absolute top-2.5 right-2.5 bg-stone-900/80 text-white hover:bg-stone-950 p-1.5 rounded-full shadow-md transition-colors cursor-pointer"
+                            title="Remove image"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </motion.div>
+                      ) : (
+                        <motion.div
+                          key="prompt"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          className="py-6 space-y-2.5"
+                        >
+                          <div className="mx-auto w-10 h-10 bg-emerald-50 text-emerald-700 rounded-full flex items-center justify-center">
+                            <Upload className="w-5 h-5" />
+                          </div>
+                          <div className="text-sm font-medium text-stone-700">
+                            Drag and drop your flower photo here
+                          </div>
+                          <p className="text-xs text-stone-500">
+                            Supports JPG, PNG, WEBP up to 10MB
+                          </p>
+                          <span className="inline-block mt-2 bg-stone-100 hover:bg-stone-200/80 text-stone-800 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors border border-stone-200">
+                            Or select manually
+                          </span>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  {/* Action Button */}
+                  {imagePreview && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mt-5 flex gap-3"
+                    >
+                      <button
+                        id="btn-run-detection"
+                        onClick={runDetection}
+                        disabled={isAnalyzing}
+                        className={`flex-1 font-semibold py-3 px-4 rounded-xl shadow-md active:scale-[0.98] disabled:opacity-50 transition-all flex items-center justify-center gap-2 text-sm text-white cursor-pointer ${
+                          detectionMode === "local"
+                            ? "bg-emerald-800 hover:bg-emerald-700 shadow-emerald-900/15"
+                            : detectionMode === "ai"
+                            ? "bg-purple-800 hover:bg-purple-700 shadow-purple-900/15"
+                            : "bg-teal-800 hover:bg-teal-700 shadow-teal-900/15"
+                        }`}
+                      >
+                        <Sparkles className="w-4 h-4 animate-pulse" />
+                        <span>
+                          {isAnalyzing
+                            ? "Executing Analysis..."
+                            : detectionMode === "local"
+                            ? "Detect with Local ML Model"
+                            : detectionMode === "ai"
+                            ? "Identify with Cloud AI Model"
+                            : "Analyze (Auto Dual-Engine)"}
+                        </span>
+                      </button>
+
+                      <button
+                        onClick={resetApp}
+                        disabled={isAnalyzing}
+                        className="bg-stone-100 hover:bg-stone-200 text-stone-700 p-3 rounded-xl border border-stone-200/80 transition-colors cursor-pointer"
+                        title="Reset App"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                      </button>
+                    </motion.div>
+                  )}
+                </div>
               )}
             </section>
 
